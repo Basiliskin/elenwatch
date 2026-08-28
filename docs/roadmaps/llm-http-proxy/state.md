@@ -4,3 +4,4 @@
 - 2026-08-28 | horizon 2 | completed | 5 phases; findings #1-#7 fixed (URL scheme, token redaction, DAG walk, reflectCall forwarding, emission guards, multibyte buffering) with fail-before/pass-after regression tests; package 89/89 + root gates green; #8/#9/#10 remain deferred to horizon 3
 
 - 2026-08-28 | horizon 3 | planned | 5 phases (parser clean-break #9, app-module bootstrap #10, kNoCapture #8, transformer-slice ADR, request-transform+Content-Length); gate passed 1 iteration (1 minor accepted as debt: self-referential requiredMaterial); vision-track transformer first slice promoted into this horizon
+- 2026-08-28 | horizon 3 | completed | 5 phases; #9 clean break (defaultParser-only surface, VERSION 0.2.0), #10 bootstrap-lived install, #8 kNoCapture cache, transformer-slice ADR, request-transform+Content-Length; package 95/95 + root gates green; response strand deferred to horizon 4

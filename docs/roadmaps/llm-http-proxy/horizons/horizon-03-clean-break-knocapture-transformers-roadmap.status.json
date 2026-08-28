@@ -1,0 +1,107 @@
+{
+  "roadmapFile": "docs/roadmaps/llm-http-proxy/horizons/horizon-03-clean-break-knocapture-transformers-roadmap.json",
+  "roadmapTask": "Horizon 3 of the llm-http-proxy project: land code-review findings #9 (defaultParser clean break), #10 (bootstrap-lived install), #8 (kNoCapture cache) plus the transformer request-strand first slice with Content-Length accounting.",
+  "createdAt": "2026-08-28T00:00:00.000Z",
+  "updatedAt": "2026-08-28T00:00:00.000Z",
+  "phases": [
+    {
+      "phaseId": "parser-seam-default-parser-clean-break",
+      "status": "done",
+      "attempts": 1,
+      "gateRun": "package: tsc --noEmit, eslint, jest (88/88), build; root: nest build, jest (1/1), eslint",
+      "gradeResult": {
+        "phaseId": "parser-seam-default-parser-clean-break",
+        "dimensionScores": [
+          {"dimensionId": "registry-collapse-complete", "score": 10, "pass": true, "evidence": "registry + aliases + resolver + parserToTokenCounter physically deleted; repo-wide grep zero matches"},
+          {"dimensionId": "public-surface-clean-break", "score": 10, "pass": true, "evidence": "index.ts re-exports defaultParser, drops resolveParser/parseCall, no shims"},
+          {"dimensionId": "consumer-lockstep", "score": 10, "pass": true, "evidence": "app.module.ts sole consumer compiles against new surface, extractModel delegates to defaultParser with fallback override"},
+          {"dimensionId": "default-parser-behavior-parity", "score": 10, "pass": true, "evidence": "defaultParser reproduces prior contract; behavioral suites carried over green"},
+          {"dimensionId": "version-bump-consistent", "score": 10, "pass": true, "evidence": "VERSION 0.2.0 in index.ts, package.json, dist cjs+esm+d.ts"},
+          {"dimensionId": "gates-green-both-levels", "score": 10, "pass": true, "evidence": "both gate levels green; dist rebuilt before root gates"}
+        ],
+        "overallPass": true
+      },
+      "completedAt": "2026-08-28T00:00:00.000Z",
+      "notes": "Compensation (revert parser/index diff + VERSION, rebuild dist) confirmed: two-file revert restores prior exports."
+    },
+    {
+      "phaseId": "app-module-scaffold-removal-and-bootstrap-lifecycle",
+      "status": "done",
+      "attempts": 1,
+      "gateRun": "root: nest build, jest (2 suites/5 tests), eslint (0 errors); package gates green from phase 1 dist",
+      "gradeResult": {
+        "phaseId": "app-module-scaffold-removal-and-bootstrap-lifecycle",
+        "dimensionScores": [
+          {"dimensionId": "no-import-time-install", "score": 10, "pass": true, "evidence": "single install() call inside onApplicationBootstrap; import probe asserts isInstalled false + pristine prototypes"},
+          {"dimensionId": "scaffold-and-imports-exactly-right", "score": 10, "pass": true, "evidence": "sample*/void + redact import gone; DEFAULT_SENSITIVE_FIELDS retained and used"},
+          {"dimensionId": "clean-break-surface-compat", "score": 10, "pass": true, "evidence": "src/ grep clean of resolveParser/parseCall; compiles against rebuilt dist"},
+          {"dimensionId": "bootstrap-hook-fires-and-pairs", "score": 10, "pass": true, "evidence": "boot->close x2 cycle + real outbound capture e2e + customParser fallback test"},
+          {"dimensionId": "rollback-safe-diff", "score": 8, "pass": true, "evidence": "diff confined to app.module.ts + new spec; minor: tokenCounter prettier reformat carried from phase-1 lint --fix"},
+          {"dimensionId": "both-gates-green", "score": 9, "pass": true, "evidence": "root gates green incl. real-capture e2e; 1-pt deduction for corroborated-not-reobserved runs"}
+        ],
+        "overallPass": true
+      },
+      "completedAt": "2026-08-28T00:00:00.000Z",
+      "notes": "Compensation (reinstate import-time install) is a two-line revert of the hook."
+    },
+    {
+      "phaseId": "k-nocapture-capture-decision-cache",
+      "status": "done",
+      "attempts": 1,
+      "gateRun": "package: typecheck, eslint, jest (91/91), build; root: nest build, jest (5/5), eslint",
+      "gradeResult": {
+        "phaseId": "k-nocapture-capture-decision-cache",
+        "dimensionScores": [
+          {"dimensionId": "k-nocapture-tag-at-wrapper-call-sites", "score": 10, "pass": true, "evidence": "kNoCapture read/set only in the three wrapper call sites; shouldCapture pure and untouched"},
+          {"dimensionId": "all-three-wrappers-short-circuit", "score": 10, "pass": true, "evidence": "guard precedes decision in onWrapper/writeWrapper/endWrapper; negative branch sets the tag in all three"},
+          {"dimensionId": "decision-parity-preserved", "score": 10, "pass": true, "evidence": "matching still captures (1 entry), non-matching none; full suite green unmodified"},
+          {"dimensionId": "exactly-once-regression-test", "score": 9, "pass": true, "evidence": "flip test drives real patched path over dummy-socket ClientRequest; verified-discriminating (fails when guard stripped); 1-pt for behavioral-observable not literal call-count spy"},
+          {"dimensionId": "per-request-scoping-no-stale-state", "score": 10, "pass": true, "evidence": "tag on request instance only; restore() needs no cleanup; install/restore cycles clean"}
+        ],
+        "overallPass": true
+      },
+      "completedAt": "2026-08-28T00:00:00.000Z",
+      "notes": "No compensation (phase has none)."
+    },
+    {
+      "phaseId": "transformer-slice-spec-adr",
+      "status": "done",
+      "attempts": 1,
+      "gateRun": "none needed (documentation phase); decisions.md promotion line verified",
+      "gradeResult": {
+        "phaseId": "transformer-slice-spec-adr",
+        "dimensionScores": [
+          {"dimensionId": "option-names-pinned", "score": 10, "pass": true, "evidence": "requestTransform/responseTransform final, no TBD/alternatives"},
+          {"dimensionId": "signatures-callable", "score": 10, "pass": true, "evidence": "sync-only (string)=>string|undefined, undefined=passthrough, Buffer.byteLength utf8"},
+          {"dimensionId": "ordering-seam-specified", "score": 10, "pass": true, "evidence": "request transform between chunk capture and reflectCall; once over concatenation"},
+          {"dimensionId": "content-length-policy-exhaustive", "score": 10, "pass": true, "evidence": "six-state verdict table incl. chunked/gzip/absent/replaced"},
+          {"dimensionId": "response-buffering-boundary-bounded", "score": 10, "pass": true, "evidence": "captured non-streaming only; boundary not extended"},
+          {"dimensionId": "decisions-promotion-logged", "score": 10, "pass": true, "evidence": "decisions.md line names ADR file; exactly one ADR exists"}
+        ],
+        "overallPass": true
+      },
+      "completedAt": "2026-08-28T00:00:00.000Z",
+      "notes": "Documentation phase; no compensation."
+    },
+    {
+      "phaseId": "request-transform-and-content-length",
+      "status": "done",
+      "attempts": 1,
+      "gateRun": "package: typecheck, eslint, jest (95/95), build (dist rebuilt, requestTransform in d.ts); root: nest build, jest (5/5), eslint",
+      "gradeResult": {
+        "phaseId": "request-transform-and-content-length",
+        "dimensionScores": [
+          {"dimensionId": "wire-body-intact-in-order", "score": 10, "pass": true, "evidence": "concat-once transform; wire body byte-identical to transformed JSON; log reflects post-transform"},
+          {"dimensionId": "content-length-accounting", "score": 10, "pass": true, "evidence": "Buffer.byteLength(utf8) via setHeader gated on header presence + actual replacement; multibyte-accurate"},
+          {"dimensionId": "untransformed-passthrough", "score": 9, "pass": true, "evidence": "no-option / undefined / throwing passthrough tested; chunked/gzip/absent structural (header gated) but no direct integration test"},
+          {"dimensionId": "reflect-arg-fidelity", "score": 10, "pass": true, "evidence": "reflectCall forwards full arg list; encoding/callback positional preserved; finding-#4 test passes unmodified"},
+          {"dimensionId": "idempotent-repeatable-rollback", "score": 10, "pass": true, "evidence": "once per request structurally (terminal end branch); repeatable; additive field removal restores passthrough"},
+          {"dimensionId": "gates-green-dist-rebuilt", "score": 9, "pass": true, "evidence": "dist rebuilt with requestTransform surface; gates green"}
+        ],
+        "overallPass": true
+      },
+      "completedAt": "2026-08-28T00:00:00.000Z",
+      "notes": "Compensation (delete additive transform fields + hook) confirmed viable per ADR §7."
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 {
   "name": "llm-http-proxy",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Near-zero-latency interception of in-process LLM provider HTTP/HTTPS traffic with pluggable loggers (incl. OTEL), per-provider parsers, request/response transformers, and payload redaction.",
   "author": "",
   "license": "MIT",

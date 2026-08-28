@@ -20,12 +20,17 @@ import * as http from 'node:http';
 import {
   ParseResult,
   ProviderParser,
+  defaultParser,
   parseCall,
-  resolveParser,
 } from './provider-parser';
 import { Logger, consoleLogger } from './logger';
 import { RedactionConfig, redact } from './redaction';
-import { InterceptorOptions, LlmLogEntry, TokenCounter } from './options';
+import {
+  InterceptorOptions,
+  LlmLogEntry,
+  RequestTransformer,
+  TokenCounter,
+} from './options';
 
 const DEFAULT_PROVIDERS: string[] = [
   'api.openai.com',
@@ -50,9 +55,18 @@ interface CaptureState {
   /** Caller trace captured SYNCHRONOUSLY at write/end time (the async
    *  emission path loses the caller stack). */
   callerTrace: string;
+  /** Set when the request transform replaced the captured body; the wire
+   *  gets the transformed bytes AND the log entry reflects them (ADR §3). */
+  transformedBody?: string;
 }
 
 const kCapture = Symbol('llm-http-proxy.capture');
+// Negative capture-decision cache: once shouldCapture says false for a
+// request, the tag is set and every wrapper short-circuits without re-
+// running the decision. Scoped to the request instance, so it cannot go
+// stale (hostname is fixed after construction) and restore() needs no
+// cleanup.
+const kNoCapture = Symbol('llm-http-proxy.noCapture');
 
 // Install guard stored on the prototype itself: a second Interceptor (or a
 // second install()) can never stack a second write/end wrapper.
@@ -102,6 +116,56 @@ function encodingArg(args: unknown[]): string | undefined {
 }
 
 /**
+ * Run the request transform exactly once over the full concatenated capture
+ * at the terminal write/end, per the slice-spec ADR. When the transformer
+ * actually replaces the body, `args[0]` is rewritten so the transformed bytes
+ * hit the wire, the log entry reflects them, and Content-Length is set from
+ * Buffer.byteLength(..., 'utf8') — but ONLY when a Content-Length header is
+ * already present (chunked / gzip / absent-header requests pass through
+ * untouched, and a no-op/undefined transform never rewrites the header).
+ */
+function applyRequestTransform(
+  req: ClientRequest,
+  state: CaptureState,
+  transform: RequestTransformer,
+  args: unknown[],
+): void {
+  if (state.requestBodyChunks.length === 0) {
+    return;
+  }
+  const original = Buffer.concat(state.requestBodyChunks).toString('utf8');
+  let replaced: string | undefined;
+  try {
+    replaced = transform(original);
+  } catch {
+    // A throwing transform forwards the original unchanged (ADR §3).
+    replaced = undefined;
+  }
+  if (replaced === undefined || replaced === original) {
+    return;
+  }
+  state.transformedBody = replaced;
+  args[0] = Buffer.from(replaced, 'utf8');
+  const header = (req as unknown as { getHeader?: (n: string) => unknown })
+    .getHeader;
+  const existing =
+    typeof header === 'function'
+      ? header.call(req, 'content-length')
+      : undefined;
+  if (existing !== undefined) {
+    (
+      req as unknown as {
+        setHeader?: (n: string, v: string | number) => void;
+      }
+    ).setHeader?.call(
+      req,
+      'content-length',
+      Buffer.byteLength(replaced, 'utf8'),
+    );
+  }
+}
+
+/**
  * The Nest-free, singleton-safe payload-capturing interceptor.
  *
  * ```
@@ -118,6 +182,7 @@ export class Interceptor {
   private readonly tokenCounter: TokenCounter;
   private readonly providerParser: ProviderParser | undefined;
   private readonly redaction: RedactionConfig | undefined;
+  private readonly requestTransform: RequestTransformer | undefined;
 
   private installed = false;
 
@@ -128,6 +193,7 @@ export class Interceptor {
     this.tokenCounter = options.tokenCounter || {};
     this.providerParser = options.providerParser;
     this.redaction = options.redaction;
+    this.requestTransform = options.requestTransform;
   }
 
   get isInstalled(): boolean {
@@ -193,8 +259,14 @@ export class Interceptor {
       if (event === 'error') {
         const tagged = tag(this);
         const capture = tagged[kCapture] as CaptureState | undefined;
-        if (!capture && shouldCapture(this, self.providers)) {
+        if (
+          !capture &&
+          !tagged[kNoCapture] &&
+          shouldCapture(this, self.providers)
+        ) {
           self.attachCapture(this, captureCallerTrace());
+        } else if (!capture && !tagged[kNoCapture]) {
+          tagged[kNoCapture] = true;
         }
       }
       return (origOn as (...args: unknown[]) => unknown).call(
@@ -211,10 +283,12 @@ export class Interceptor {
       const capture = tagged[kCapture] as CaptureState | undefined;
       if (capture !== undefined) {
         appendChunk(capture.requestBodyChunks, args[0], encodingArg(args));
-      } else if (shouldCapture(this, self.providers)) {
+      } else if (!tagged[kNoCapture] && shouldCapture(this, self.providers)) {
         self.attachCapture(this, captureCallerTrace());
         const state = tagged[kCapture] as CaptureState;
         appendChunk(state.requestBodyChunks, args[0], encodingArg(args));
+      } else if (!tagged[kNoCapture]) {
+        tagged[kNoCapture] = true;
       }
       return reflectCall(
         originalWrite as unknown as ReflectFn,
@@ -234,7 +308,10 @@ export class Interceptor {
         }
         capture.capturedEnd = true;
         capture.finished = true;
-      } else if (shouldCapture(this, self.providers)) {
+        if (self.requestTransform !== undefined) {
+          applyRequestTransform(this, capture, self.requestTransform, args);
+        }
+      } else if (!tagged[kNoCapture] && shouldCapture(this, self.providers)) {
         self.attachCapture(this, captureCallerTrace());
         const state = tagged[kCapture] as CaptureState;
         if (args[0] !== undefined) {
@@ -242,6 +319,11 @@ export class Interceptor {
         }
         state.capturedEnd = true;
         state.finished = true;
+        if (self.requestTransform !== undefined) {
+          applyRequestTransform(this, state, self.requestTransform, args);
+        }
+      } else if (!tagged[kNoCapture]) {
+        tagged[kNoCapture] = true;
       }
       return reflectCall(
         originalEnd as unknown as ReflectFn,
@@ -377,7 +459,9 @@ export class Interceptor {
     state: CaptureState,
     error?: Error,
   ): void {
-    const rawRequest = Buffer.concat(state.requestBodyChunks).toString('utf8');
+    const rawRequest = state.transformedBody
+      ? state.transformedBody
+      : Buffer.concat(state.requestBodyChunks).toString('utf8');
     const rawResponse = Buffer.concat(state.responseBodyChunks).toString(
       'utf8',
     );
@@ -402,14 +486,11 @@ export class Interceptor {
     const url = deriveUrl(req, resolveScheme(req));
     const callerTrace = state.callerTrace || 'unknown';
 
-    // Parse step: route through the registered parser. A caller-supplied
-    // providerParser fully replaces the default registry; otherwise the
-    // registry's per-host parser runs. Legacy `tokenCounter` overrides
-    // hook into the parser's individual hooks when supplied.
-    const parser =
-      this.providerParser ??
-      resolveParser(reqHostname(req)) ??
-      resolveParser(undefined);
+    // Parse step: route through the default parser. A caller-supplied
+    // providerParser fully replaces it; otherwise defaultParser runs.
+    // Legacy `tokenCounter` overrides hook into the parser's individual
+    // hooks when supplied.
+    const parser = this.providerParser ?? defaultParser;
     const tokenCounter = this.tokenCounter;
     const effectiveParser: ProviderParser =
       tokenCounter.estimateInputTokens || tokenCounter.extractOutputTokens

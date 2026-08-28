@@ -42,6 +42,18 @@ export interface TokenCounter {
 }
 
 /**
+ * Request-body transformer (first slice, horizon 3).
+ *
+ * Receives the fully concatenated captured request body as a UTF-8 string
+ * and returns the body to send on the wire. Must be synchronous. Returning
+ * `undefined` (or the input unchanged) is passthrough: the original body is
+ * kept and Content-Length is NOT rewritten. MUST NOT throw; a throwing
+ * transformer forwards the body unchanged. Contract pinned by
+ * docs/roadmaps/llm-http-proxy/transformer-slice-spec.md.
+ */
+export type RequestTransformer = (requestBody: string) => string | undefined;
+
+/**
  * Interceptor options.
  *
  * `providers` — hostnames (exact or subdomain suffix) or regexes to
@@ -63,6 +75,10 @@ export interface TokenCounter {
  * default config masks built-in PII / credential / financial field names
  * on both request and response sides. Override to add custom field
  * names or to limit masking to one side.
+ *
+ * `requestTransform` — optional request-body transformer. Runs exactly
+ * once per request body, between chunk capture and wire forwarding;
+ * absent option = synchronous passthrough (unchanged behavior).
  */
 export interface InterceptorOptions {
   providers?: (string | RegExp)[];
@@ -71,4 +87,5 @@ export interface InterceptorOptions {
   tokenCounter?: TokenCounter;
   providerParser?: ProviderParser;
   redaction?: RedactionConfig;
+  requestTransform?: RequestTransformer;
 }

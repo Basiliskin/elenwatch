@@ -856,3 +856,350 @@ describe('helper functions', () => {
     ).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// kNoCapture: negative capture-decision cache (#8)
+// ---------------------------------------------------------------------------
+
+describe('kNoCapture caches the negative capture decision (#8)', () => {
+  test('decision runs exactly once: hostname flipped after write() does not re-trigger capture', async () => {
+    // Drive the REAL patched wrapper path with a real ClientRequest that
+    // never connects (dummy createConnection socket). With no options
+    // hostname, the interceptor's reqHostname reads the Host header, which
+    // we control. write() evaluates shouldCapture once (cache miss, tag
+    // set); flipping to a provider-MATCHING host before end() must NOT
+    // re-run the decision or attach capture.
+    const entries: LlmLogEntry[] = [];
+    const interceptor = new Interceptor({
+      providers: ['127.0.0.1'], // matches only AFTER the flip
+      logger: (entry) => entries.push(entry),
+    });
+    interceptor.install();
+    try {
+      const dummySocket = new EventEmitter() as unknown as {
+        setNoDelay: () => void;
+        setKeepAlive: () => void;
+        ref: () => void;
+        unref: () => void;
+        address: () => object;
+      };
+      dummySocket.setNoDelay = () => undefined;
+      dummySocket.setKeepAlive = () => undefined;
+      dummySocket.ref = () => undefined;
+      dummySocket.unref = () => undefined;
+      dummySocket.address = () => ({});
+      const req = http.request(
+        {
+          port: 1,
+          path: '/v1/chat/completions',
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            host: 'not-a-provider.example.com',
+          },
+          createConnection: () => dummySocket,
+          agent: false,
+        } as unknown as http.RequestOptions,
+        () => undefined,
+      );
+      req.on('error', () => undefined);
+      // First write(): no match -> the ONLY shouldCapture evaluation (the
+      // cache miss), tag set.
+      req.write('{"model":"stale","messages":[]}');
+      // Flip to a provider-MATCHING hostname BEFORE end(): without the
+      // cache, end() would re-evaluate shouldCapture, attach capture, and
+      // the response-end below would emit an entry. With the kNoCapture
+      // tag, endWrapper short-circuits and no capture is attached.
+      (req as unknown as { hostname: string }).hostname = '127.0.0.1';
+      req.end('{"model":"final","messages":[]}');
+
+      // Drive the terminal signal: if a capture WAS attached (the cache is
+      // absent), the response handler will forward data/end to
+      // completeCapture and emit a log entry; if the tag suppressed it,
+      // emitting 'response' finds no listener and entries stays empty.
+      const fakeRes = new EventEmitter() as unknown as http.IncomingMessage;
+      (
+        req as unknown as {
+          emit: (ev: string, ...args: unknown[]) => boolean;
+        }
+      ).emit('response', fakeRes);
+      (
+        fakeRes as unknown as {
+          emit: (ev: string, ...args: unknown[]) => boolean;
+        }
+      ).emit('data', Buffer.from('{"usage":{"completion_tokens":1}}'));
+      (
+        fakeRes as unknown as {
+          emit: (ev: string) => boolean;
+        }
+      ).emit('end');
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+    } finally {
+      interceptor.restore();
+    }
+    // No re-run of the decision at end() -> no capture attached -> no entry.
+    expect(entries.length).toBe(0);
+  });
+
+  test('matching requests still capture with the cache active', async () => {
+    const { port, close } = await startServer();
+    try {
+      const entries: LlmLogEntry[] = [];
+      const interceptor = new Interceptor({
+        providers: ['127.0.0.1'],
+        logger: (entry) => entries.push(entry),
+      });
+      interceptor.install();
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const req = http.request(
+            {
+              port,
+              hostname: '127.0.0.1',
+              path: '/v1/chat/completions',
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+            },
+            (res) => {
+              res.resume();
+              res.on('end', resolve);
+            },
+          );
+          req.on('error', reject);
+          req.write('{"model":"gpt-4","messages":[]}');
+          req.end();
+        });
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+      } finally {
+        interceptor.restore();
+      }
+      expect(entries.length).toBe(1);
+      expect(entries[0]).toMatchObject({ model: 'gpt-4' });
+    } finally {
+      await close();
+    }
+  });
+
+  test('shouldCapture stays pure: bare {hostname} object still works uninstalled', () => {
+    expect(
+      shouldCapture(
+        { hostname: 'api.openai.com' } as unknown as http.ClientRequest,
+        ['api.openai.com'],
+      ),
+    ).toBe(true);
+    expect(
+      shouldCapture(
+        { hostname: 'api.openai.com' } as unknown as http.ClientRequest,
+        ['api.anthropic.com'],
+      ),
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// request-transform-and-content-length (horizon 3, phase 5)
+// ---------------------------------------------------------------------------
+
+/** Server that captures the received request body and Content-Length header. */
+function captureServer(): Promise<{
+  port: number;
+  received: () => { body: string; contentLength: string | undefined };
+  close: () => Promise<void>;
+}> {
+  let body = '';
+  let contentLength: string | undefined;
+  return new Promise((resolve) => {
+    const server = http.createServer((req, res) => {
+      contentLength = req.headers['content-length'];
+      req.resume();
+      req.on('data', (c: Buffer) => (body += c.toString()));
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ usage: { completion_tokens: 3 } }));
+      });
+    });
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      if (address && typeof address === 'object') {
+        resolve({
+          port: address.port,
+          received: () => ({ body, contentLength }),
+          close: () => new Promise<void>((r) => server.close(() => r())),
+        });
+      } else {
+        throw new Error('no port');
+      }
+    });
+  });
+}
+
+/** POST with an explicit Content-Length header (as Node apps send). */
+function postWithLength(
+  port: number,
+  body: string,
+): Promise<{ status: number }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        port,
+        hostname: '127.0.0.1',
+        path: '/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(body, 'utf8'),
+        },
+      },
+      (res) => {
+        res.resume();
+        res.on('end', () => resolve({ status: res.statusCode ?? 0 }));
+      },
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+describe('request transform strand with Content-Length accounting (#h3p5)', () => {
+  test('mutated request body reaches the wire intact with byte-accurate Content-Length', async () => {
+    const { port, received, close } = await captureServer();
+    try {
+      const entries: LlmLogEntry[] = [];
+      const interceptor = new Interceptor({
+        providers: ['127.0.0.1'],
+        capturePayloads: true,
+        logger: (e) => entries.push(e),
+        requestTransform: (body) => body.replace(/planet/g, 'universe'),
+      });
+      interceptor.install();
+      try {
+        await postWithLength(
+          port,
+          JSON.stringify({
+            model: 'gpt-4',
+            messages: [{ content: 'hello planet' }],
+          }),
+        );
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+      } finally {
+        interceptor.restore();
+      }
+      const wire = received();
+      // Wire body is the TRANSFORMED body, byte-for-byte.
+      expect(wire.body).toBe(
+        JSON.stringify({
+          model: 'gpt-4',
+          messages: [{ content: 'hello universe' }],
+        }),
+      );
+      // Content-Length equals Buffer.byteLength of the transformed body.
+      expect(wire.contentLength).toBe(
+        String(
+          Buffer.byteLength(
+            JSON.stringify({
+              model: 'gpt-4',
+              messages: [{ content: 'hello universe' }],
+            }),
+            'utf8',
+          ),
+        ),
+      );
+      // The log entry reflects the post-transform body (ADR §3).
+      expect(entries.length).toBe(1);
+      expect(JSON.stringify(entries[0].maskedRequestBody)).toContain(
+        'hello universe',
+      );
+    } finally {
+      await close();
+    }
+  });
+
+  test('no requestTransform option = passthrough, caller Content-Length untouched', async () => {
+    const { port, received, close } = await captureServer();
+    try {
+      const interceptor = new Interceptor({
+        providers: ['127.0.0.1'],
+      });
+      interceptor.install();
+      try {
+        const original = JSON.stringify({ model: 'gpt-4', magic: 'привет' });
+        await postWithLength(port, original);
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+      } finally {
+        interceptor.restore();
+      }
+      const wire = received();
+      expect(wire.body).toBe(
+        JSON.stringify({ model: 'gpt-4', magic: 'привет' }),
+      );
+      expect(wire.contentLength).toBe(
+        String(
+          Buffer.byteLength(
+            JSON.stringify({ model: 'gpt-4', magic: 'привет' }),
+            'utf8',
+          ),
+        ),
+      );
+    } finally {
+      await close();
+    }
+  });
+
+  test('transform returning undefined passes through with the original header', async () => {
+    const { port, received, close } = await captureServer();
+    try {
+      const interceptor = new Interceptor({
+        providers: ['127.0.0.1'],
+        requestTransform: () => undefined, // passthrough
+      });
+      interceptor.install();
+      try {
+        const original = '{"model":"keep-me"}';
+        await postWithLength(port, original);
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+      } finally {
+        interceptor.restore();
+      }
+      const wire = received();
+      expect(wire.body).toBe('{"model":"keep-me"}');
+      expect(wire.contentLength).toBe(
+        String(Buffer.byteLength('{"model":"keep-me"}', 'utf8')),
+      );
+    } finally {
+      await close();
+    }
+  });
+
+  test('a throwing transformer forwards the body unchanged and never rewrites the header', async () => {
+    const { port, received, close } = await captureServer();
+    try {
+      const interceptor = new Interceptor({
+        providers: ['127.0.0.1'],
+        requestTransform: () => {
+          throw new Error('boom');
+        },
+      });
+      interceptor.install();
+      try {
+        const original = '{"model":"resilient"}';
+        await postWithLength(port, original);
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+      } finally {
+        interceptor.restore();
+      }
+      const wire = received();
+      expect(wire.body).toBe('{"model":"resilient"}');
+      expect(wire.contentLength).toBe(
+        String(Buffer.byteLength('{"model":"resilient"}', 'utf8')),
+      );
+    } finally {
+      await close();
+    }
+  });
+});

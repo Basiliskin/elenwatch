@@ -10,8 +10,7 @@ export { deriveUrl, captureCallerTrace, shouldCapture } from './interceptor';
 export {
   defaultEstimateInputTokens,
   defaultExtractOutputTokens,
-  resolveParser,
-  parseCall,
+  defaultParser,
 } from './provider-parser';
 export type { ProviderParser, ParseResult } from './provider-parser';
 export {
@@ -23,5 +22,10 @@ export {
 export type { RedactionConfig } from './redaction';
 export { consoleLogger, noopLogger } from './logger';
 export type { Logger } from './logger';
-export type { InterceptorOptions, LlmLogEntry, TokenCounter } from './options';
-export const VERSION = '0.1.0';
+export type {
+  InterceptorOptions,
+  LlmLogEntry,
+  TokenCounter,
+  RequestTransformer,
+} from './options';
+export const VERSION = '0.2.0';

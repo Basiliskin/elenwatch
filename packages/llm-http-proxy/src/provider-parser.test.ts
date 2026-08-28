@@ -1,12 +1,14 @@
 /**
- * Unit tests for the provider-parser module and registry.
+ * Unit tests for the provider-parser module.
  *
- * The registry is what the interceptor delegates to. We assert:
- *   - each registered host resolves to a distinct parser
- *   - the parsers reproduce today's extractModel + chars/4 + usage
- *     precedence behavior exactly
- *   - a caller-supplied providerParser fully replaces the default
- *     registry when supplied via InterceptorOptions
+ * The module ships exactly one parser object — `defaultParser` — which
+ * the interceptor uses unless a custom `providerParser` is supplied. We
+ * assert:
+ *   - defaultParser is defined and is the single parser object
+ *   - it reproduces today's extractModel + chars/4 + usage precedence
+ *     behavior exactly
+ *   - a caller-supplied providerParser fully replaces the default when
+ *     supplied via InterceptorOptions
  *   - parsing is deterministic and pure (no input mutation, same input
  *     → same output)
  */
@@ -17,8 +19,8 @@ import type { LlmLogEntry } from './options';
 import {
   ParseResult,
   ProviderParser,
+  defaultParser,
   parseCall,
-  resolveParser,
   defaultEstimateInputTokens,
   defaultExtractOutputTokens,
 } from './provider-parser';
@@ -100,29 +102,29 @@ async function withEntries<T>(
 // provider-parser-api: seam is real and replaceable
 // ---------------------------------------------------------------------------
 
-describe('ProviderParser seam is real', () => {
-  test('resolveParser returns a distinct parser per registered host', () => {
-    const openai = resolveParser('api.openai.com');
-    const anthropic = resolveParser('api.anthropic.com');
-    const cohere = resolveParser('api.cohere.ai');
-    const mistral = resolveParser('api.mistral.ai');
-    // Each registry lookup must succeed and yield a defined parser.
-    expect(openai).toBeDefined();
-    expect(anthropic).toBeDefined();
-    expect(cohere).toBeDefined();
-    expect(mistral).toBeDefined();
-    // All four are addressable under the actual hostname the interceptor
-    // intercepts (the registry MUST NOT throw on exact hosts).
-    expect(() => resolveParser('api.openai.com')).not.toThrow();
+describe('defaultParser is the single parser seam', () => {
+  test('defaultParser is defined and implements the full ProviderParser contract', () => {
+    expect(defaultParser).toBeDefined();
+    expect(typeof defaultParser.extractModel).toBe('function');
+    expect(typeof defaultParser.estimateInputTokens).toBe('function');
+    expect(typeof defaultParser.extractOutputTokens).toBe('function');
+    expect(defaultParser.extractModel({ model: 'x' })).toBe('x');
   });
 
-  test('unknown host falls back to a defined parser (no throw)', () => {
-    const p = resolveParser('api.notregistered.com');
-    expect(p).toBeDefined();
-    expect(p.extractModel({ model: 'x' })).toBe('x');
+  test('the interceptor uses defaultParser without a custom providerParser', async () => {
+    const { port, close } = await startServer();
+    try {
+      const { entries } = await withEntries({ providers: ['127.0.0.1'] }, () =>
+        post(port, { model: 'gpt-4', messages: [] }),
+      );
+      expect(entries.length).toBe(1);
+      expect(entries[0].model).toBe('gpt-4');
+    } finally {
+      await close();
+    }
   });
 
-  test('custom providerParser replaces the registry end-to-end', async () => {
+  test('custom providerParser replaces the default end-to-end', async () => {
     const customParser: ProviderParser = {
       extractModel: () => 'custom-model',
       estimateInputTokens: () => 999,
@@ -167,7 +169,7 @@ describe("legacy parity: defaults reproduce today's extraction", () => {
   });
 
   test('model is read from `model`, then `model_name`', () => {
-    const parser = resolveParser('api.openai.com');
+    const parser = defaultParser;
     expect(parser.extractModel({ model: 'gpt-4' })).toBe('gpt-4');
     expect(parser.extractModel({ model_name: 'claude-2' })).toBe('claude-2');
     expect(parser.extractModel({})).toBe('unknown');
@@ -198,7 +200,7 @@ describe("legacy parity: defaults reproduce today's extraction", () => {
   });
 
   test('parseCall assembles a ParseResult from a parser', () => {
-    const parser = resolveParser('api.openai.com');
+    const parser = defaultParser;
     const result: ParseResult = parseCall(
       parser,
       { model: 'gpt-4', messages: [{ content: 'abcdef' }] },
@@ -211,7 +213,7 @@ describe("legacy parity: defaults reproduce today's extraction", () => {
   });
 
   test('parseCall on error path forces outputTokens to 0', () => {
-    const parser = resolveParser('api.openai.com');
+    const parser = defaultParser;
     const result = parseCall(
       parser,
       { model: 'gpt-4' },
@@ -219,12 +221,6 @@ describe("legacy parity: defaults reproduce today's extraction", () => {
       true,
     );
     expect(result.outputTokens).toBe(0);
-  });
-
-  test('subdomain resolves to the registered host parser', () => {
-    const sub = resolveParser('eu.api.openai.com');
-    const reg = resolveParser('api.openai.com');
-    expect(sub.extractModel).toBe(reg.extractModel);
   });
 });
 
@@ -295,12 +291,7 @@ describe('parsing is pure and deterministic', () => {
       null,
       'not-an-object',
     ];
-    for (const parser of [
-      resolveParser('api.openai.com'),
-      resolveParser('api.anthropic.com'),
-      resolveParser('api.cohere.ai'),
-      resolveParser('api.mistral.ai'),
-    ]) {
+    for (const parser of [defaultParser]) {
       for (const payload of fixtures) {
         const a = {
           m: parser.extractModel(payload),
@@ -322,7 +313,7 @@ describe('parsing is pure and deterministic', () => {
     ];
     for (const p of payloads) {
       const snapshot = JSON.parse(JSON.stringify(p));
-      const parser = resolveParser('api.openai.com');
+      const parser = defaultParser;
       parser.extractModel(p);
       parser.estimateInputTokens(p);
       parser.extractOutputTokens(p);
@@ -331,7 +322,7 @@ describe('parsing is pure and deterministic', () => {
   });
 
   test('empty, non-JSON, and usage-less payloads yield safe fallbacks', () => {
-    const parser = resolveParser('api.openai.com');
+    const parser = defaultParser;
     expect(parser.extractModel(undefined)).toBe('unknown');
     expect(parser.extractModel({})).toBe('unknown');
     expect(parser.estimateInputTokens({})).toBe(0);

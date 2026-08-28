@@ -1,13 +1,13 @@
 /**
- * Per-provider parsing: model + token extraction behind a pluggable seam.
+ * Parsing: model + token extraction behind a pluggable seam.
  *
  * The `ProviderParser` interface is what the interceptor's parse step
- * delegates to. The default registry below reproduces today's behavior
+ * delegates to. `defaultParser` below reproduces today's behavior
  * exactly (model from `model` then `model_name`; input = ceil(chars/4)
  * over messages/prompt/input; output = usage.completion_tokens preferred
  * over usage.output_tokens, with the choices/completion/output_text
- * text fallback). Consumers can supply a custom parser per provider
- * (or globally) and the interceptor will route through it.
+ * text fallback). Consumers can supply a custom parser via the
+ * `providerParser` option and the interceptor will use it in full.
  *
  * Parsers MUST be pure: same input → same output, no mutation of the
  * payload, fall back to 'unknown'/0 on malformed input rather than
@@ -33,7 +33,7 @@ export interface ParseResult {
 }
 
 // ---------------------------------------------------------------------------
-// Shared helpers (used by every parser in the default registry)
+// Shared helpers
 // ---------------------------------------------------------------------------
 
 /** Read a string field from an unknown object, with safe fallbacks. */
@@ -129,11 +129,16 @@ function readOutputText(responseJson: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
-// Default parsers (one per registered provider host)
+// Default parser
 // ---------------------------------------------------------------------------
 
-/** OpenAI / Anthropic / Cohere / Mistral share the same shape contract. */
-const genericChatParser: ProviderParser = {
+/**
+ * The single default parser: OpenAI / Anthropic / Cohere / Mistral all
+ * share the same shape contract, so one parser replaces the former
+ * per-provider registry. A caller-supplied `providerParser` option fully
+ * replaces it.
+ */
+export const defaultParser: ProviderParser = {
   extractModel: (requestJson) =>
     readString(requestJson, 'model', 'model_name') ?? 'unknown',
   estimateInputTokens: (requestJson) =>
@@ -145,63 +150,6 @@ const genericChatParser: ProviderParser = {
       : ceilCharsOverFour(readOutputText(responseJson));
   },
 };
-
-const openaiParser: ProviderParser = genericChatParser;
-const anthropicParser: ProviderParser = genericChatParser;
-const cohereParser: ProviderParser = genericChatParser;
-const mistralParser: ProviderParser = genericChatParser;
-
-/** Fallback parser for hosts that are not in the registry. */
-const fallbackParser: ProviderParser = genericChatParser;
-
-// ---------------------------------------------------------------------------
-// Registry
-// ---------------------------------------------------------------------------
-
-const PARSERS_BY_HOST: Record<string, ProviderParser> = {
-  'api.openai.com': openaiParser,
-  'api.anthropic.com': anthropicParser,
-  'api.cohere.ai': cohereParser,
-  'api.mistral.ai': mistralParser,
-};
-
-/**
- * Resolve the parser for a hostname. Falls back to `fallbackParser` for
- * unknown hosts (never throws).
- */
-export function resolveParser(hostname: string | undefined): ProviderParser {
-  if (!hostname) {
-    return fallbackParser;
-  }
-  const lc = hostname.toLowerCase();
-  // Exact host match wins; otherwise substring match against any registered
-  // key (covers subdomains like 'eu.api.openai.com' resolving to openaiParser).
-  if (PARSERS_BY_HOST[lc]) {
-    return PARSERS_BY_HOST[lc];
-  }
-  for (const [host, parser] of Object.entries(PARSERS_BY_HOST)) {
-    if (lc === host || lc.endsWith(`.${host}`)) {
-      return parser;
-    }
-  }
-  return fallbackParser;
-}
-
-/**
- * Default `TokenCounter` shape — derived from a parser. Exposed so the
- * interceptor can keep its existing `tokenCounter` option working.
- */
-export function parserToTokenCounter(parser: ProviderParser): {
-  estimateInputTokens: (requestBody: unknown) => number;
-  extractOutputTokens: (responseBody: unknown) => number;
-} {
-  return {
-    estimateInputTokens: (requestBody) =>
-      parser.estimateInputTokens(requestBody),
-    extractOutputTokens: (responseBody) =>
-      parser.extractOutputTokens(responseBody),
-  };
-}
 
 /** Run a parser over a captured request/response and assemble a ParseResult. */
 export function parseCall(

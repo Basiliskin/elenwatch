@@ -1,4 +1,8 @@
-import { Module, OnApplicationShutdown } from '@nestjs/common';
+import {
+  Module,
+  OnApplicationBootstrap,
+  OnApplicationShutdown,
+} from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import {
@@ -7,10 +11,8 @@ import {
   LlmLogEntry,
   InterceptorOptions,
   ProviderParser,
-  redact,
   DEFAULT_SENSITIVE_FIELDS,
-  resolveParser,
-  parseCall,
+  defaultParser,
   VERSION as LLM_HTTP_PROXY_VERSION,
 } from 'llm-http-proxy';
 
@@ -27,8 +29,7 @@ const captureLogger = (entry: LlmLogEntry): void => {
 
 const customProviderParser: ProviderParser = {
   extractModel: (requestJson) => {
-    const parser = resolveParser(undefined);
-    const model = parser.extractModel(requestJson);
+    const model = defaultParser.extractModel(requestJson);
     return model === 'unknown' ? 'elenwatch-fallback' : model;
   },
   estimateInputTokens: (requestJson) => {
@@ -53,10 +54,11 @@ const interceptorOptions: InterceptorOptions = {
   logger: captureLogger,
   providerParser: customProviderParser,
   tokenCounter: {
-    estimateInputTokens: (requestBody) => Math.ceil(JSON.stringify(requestBody ?? {}).length / 4),
+    estimateInputTokens: (requestBody) =>
+      Math.ceil(JSON.stringify(requestBody ?? {}).length / 4),
     extractOutputTokens: (responseBody) =>
-      ((responseBody as { usage?: { completion_tokens?: number } } | null)
-        ?.usage?.completion_tokens ?? 0),
+      (responseBody as { usage?: { completion_tokens?: number } } | null)?.usage
+        ?.completion_tokens ?? 0,
   },
   redaction: {
     sensitiveFields: [...DEFAULT_SENSITIVE_FIELDS, 'elenwatchSecret'],
@@ -65,23 +67,6 @@ const interceptorOptions: InterceptorOptions = {
 };
 
 export const llmHttpInterceptor = new Interceptor(interceptorOptions);
-llmHttpInterceptor.install();
-
-const sampleParser = resolveParser('api.openai.com');
-const sampleParseResult = parseCall(
-  sampleParser,
-  { model: 'gpt-4o-mini', messages: [{ content: 'hello world' }] },
-  { usage: { completion_tokens: 7 } },
-  false,
-);
-const maskedSample = redact(
-  { email: 'a@b.com', password: 'p' },
-  interceptorOptions.redaction,
-  'request',
-);
-void sampleParseResult;
-void maskedSample;
-void LLM_HTTP_PROXY_VERSION;
 
 @Module({
   imports: [],
@@ -102,7 +87,13 @@ void LLM_HTTP_PROXY_VERSION;
     },
   ],
 })
-export class AppModule implements OnApplicationShutdown {
+export class AppModule
+  implements OnApplicationBootstrap, OnApplicationShutdown
+{
+  onApplicationBootstrap(): void {
+    llmHttpInterceptor.install();
+  }
+
   onApplicationShutdown(): void {
     llmHttpInterceptor.restore();
   }
