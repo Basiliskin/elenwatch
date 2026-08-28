@@ -2,6 +2,10 @@
  * Public option types for the llm-http-proxy interceptor.
  */
 
+import type { Logger } from './logger';
+import type { ProviderParser } from './provider-parser';
+import type { RedactionConfig } from './redaction';
+
 /**
  * Shape of the log entry emitted per intercepted LLM call.
  *
@@ -28,7 +32,9 @@ export interface LlmLogEntry {
 
 /**
  * Optional custom token-counting functions. When absent, a simple
- * character-based heuristic is used (ceil(chars / 4)).
+ * character-based heuristic is used (ceil(chars / 4)). Prefer supplying
+ * a `providerParser` over these — the parser owns the full extraction
+ * contract and these legacy hooks are kept only for backward compat.
  */
 export interface TokenCounter {
   estimateInputTokens?: (requestBody: unknown) => number;
@@ -48,10 +54,21 @@ export interface TokenCounter {
  * `logger` — the emission sink. Defaults to console.log(JSON.stringify(entry)).
  *
  * `tokenCounter` — optional overrides for token estimation/extraction.
+ *
+ * `providerParser` — optional per-host parser that fully overrides the
+ * default registry's model and token extraction. When supplied, the
+ * registry is bypassed entirely.
+ *
+ * `redaction` — optional configuration for payload redaction. The
+ * default config masks built-in PII / credential / financial field names
+ * on both request and response sides. Override to add custom field
+ * names or to limit masking to one side.
  */
 export interface InterceptorOptions {
   providers?: (string | RegExp)[];
   capturePayloads?: boolean;
-  logger?: (entry: LlmLogEntry) => void;
+  logger?: Logger;
   tokenCounter?: TokenCounter;
+  providerParser?: ProviderParser;
+  redaction?: RedactionConfig;
 }

@@ -9,7 +9,6 @@
  */
 
 import * as http from 'node:http';
-import * as https from 'node:https';
 import {
   Interceptor,
   deriveUrl,
@@ -28,38 +27,6 @@ import type { LlmLogEntry } from './options';
  * via defineProperty on the transitory value-slot, never on the module's
  * own export slot.
  */
-
-/** Bound-backing-fn utilities for a module-level function property. */
-function patchFnSlot(
-  mod: typeof http | typeof https,
-  fn: (args: unknown[], entry: 'http' | 'https') => http.ClientRequest,
-  entry: 'http' | 'https',
-): { original: typeof http.request; wrapper: typeof http.request } {
-  // Capture the CURRENT value as the original — this is the same function
-  // Node or any prior patcher installed.
-  const original = mod.request;
-  const wrapper = ((...args: unknown[]): http.ClientRequest =>
-    fn(args, entry)) as typeof http.request;
-  (wrapper as unknown as { __orig?: typeof http.request }).__orig = original;
-  Object.defineProperty(mod, 'request', {
-    value: wrapper,
-    configurable: false,
-    writable: false,
-  });
-  return { original, wrapper };
-}
-
-/** Re-instate the original value into the module's request slot. */
-function restoreFnSlot(
-  mod: typeof http | typeof https,
-  original: typeof http.request,
-): void {
-  Object.defineProperty(mod, 'request', {
-    value: original,
-    configurable: false,
-    writable: false,
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -154,7 +121,7 @@ function post(
 
 describe('singleton guard', () => {
   test('install() twice leaves exactly one interception layer', async () => {
-    const { server, port, close } = await startServer();
+    const { port, close } = await startServer();
     try {
       const entries: LlmLogEntry[] = [];
       const interceptor = new Interceptor({
@@ -231,7 +198,7 @@ describe('off-request-path capture ordering', () => {
     interceptor.install();
 
     const order: string[] = [];
-    await new Promise<void>((resolve, reject) => {
+    await new Promise<void>((resolve) => {
       const req = http.request(
         { hostname: 'example.com', port: 1, path: '/', method: 'POST' },
         () => {},
@@ -252,7 +219,7 @@ describe('off-request-path capture ordering', () => {
   });
 
   test('write() forwards synchronously and returns the stream contract', async () => {
-    const { server, port, close } = await startServer();
+    const { port, close } = await startServer();
     try {
       const interceptor = new Interceptor({
         providers: ['127.0.0.1'],
@@ -282,7 +249,7 @@ describe('off-request-path capture ordering', () => {
   });
 
   test('the write path performs no body serialization or full-body work', async () => {
-    const { server, port, close } = await startServer();
+    const { port, close } = await startServer();
     try {
       let emitRan = false;
       const interceptor = new Interceptor({
@@ -375,7 +342,7 @@ describe('url derivation', () => {
   });
 
   test('intercepted emission carries a correct absolute url', async () => {
-    const { server, port, close } = await startServer();
+    const { port, close } = await startServer();
     try {
       const { entries } = await withEntries(
         { providers: ['127.0.0.1'], capturePayloads: true },
@@ -473,7 +440,7 @@ describe('error-path emission', () => {
         path: '/',
         method: 'POST',
       });
-      const weird = new Error('boom');
+      new Error('boom'); // hostile error props tolerated
       req.on('error', () => resolve()); // no crash despite hostile props
       req.end('{}');
     });
@@ -489,7 +456,7 @@ describe('error-path emission', () => {
 
 describe('default-redaction: no raw payload in default emissions', () => {
   test('sensitive literal from the request body never appears by default', async () => {
-    const { server, port, close } = await startServer();
+    const { port, close } = await startServer();
     try {
       const { entries } = await withEntries(
         { providers: ['127.0.0.1'] }, // capturePayloads left off
@@ -514,7 +481,7 @@ describe('default-redaction: no raw payload in default emissions', () => {
   });
 
   test('payload capture is strictly opt-in', async () => {
-    const { server, port, close } = await startServer();
+    const { port, close } = await startServer();
     try {
       const on = await withEntries(
         { providers: ['127.0.0.1'], capturePayloads: true },
@@ -563,7 +530,7 @@ describe('default-redaction: no raw payload in default emissions', () => {
 
 describe('caller trace', () => {
   test('success path: points at the file that issued the request, not interceptor internals', async () => {
-    const { server, port, close } = await startServer();
+    const { port, close } = await startServer();
     try {
       function issueRequest(): Promise<void> {
         // Synchronous-ish issuer so the named frame is in the write stack.

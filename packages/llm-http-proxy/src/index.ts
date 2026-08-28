@@ -6,12 +6,22 @@
  * span exporter on the logger seam.
  */
 export { Interceptor } from './interceptor';
+export { deriveUrl, captureCallerTrace, shouldCapture } from './interceptor';
 export {
-  deriveUrl,
-  captureCallerTrace,
-  shouldCapture,
   defaultEstimateInputTokens,
   defaultExtractOutputTokens,
-} from './interceptor';
+  resolveParser,
+  parseCall,
+} from './provider-parser';
+export type { ProviderParser, ParseResult } from './provider-parser';
+export {
+  redact,
+  DEFAULT_PLACEHOLDER,
+  DEFAULT_SENSITIVE_FIELDS,
+  DEFAULT_REDACTION_CONFIG,
+} from './redaction';
+export type { RedactionConfig } from './redaction';
+export { consoleLogger, noopLogger } from './logger';
+export type { Logger } from './logger';
 export type { InterceptorOptions, LlmLogEntry, TokenCounter } from './options';
 export const VERSION = '0.1.0';

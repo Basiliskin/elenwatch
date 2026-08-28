@@ -17,6 +17,14 @@
 
 import { ClientRequest, IncomingMessage } from 'node:http';
 import * as http from 'node:http';
+import {
+  ParseResult,
+  ProviderParser,
+  parseCall,
+  resolveParser,
+} from './provider-parser';
+import { Logger, consoleLogger } from './logger';
+import { RedactionConfig, redact } from './redaction';
 import { InterceptorOptions, LlmLogEntry, TokenCounter } from './options';
 
 const DEFAULT_PROVIDERS: string[] = [
@@ -26,6 +34,10 @@ const DEFAULT_PROVIDERS: string[] = [
   'api.mistral.ai',
 ];
 
+export {
+  defaultEstimateInputTokens,
+  defaultExtractOutputTokens,
+} from './provider-parser';
 
 /** Payload bookkeeping attached to a ClientRequest whose url is captured. */
 interface CaptureState {
@@ -68,6 +80,9 @@ function appendChunk(chunks: string[], chunk: unknown): void {
       chunks.push('<unserializable>');
     }
   } else {
+    // Primitive (number | boolean | bigint | symbol): safe, and the type
+    // guard above already excluded objects, so String() cannot produce the
+    // `[object Object]` leak the lint rule guards against.
     chunks.push(String(chunk));
   }
 }
@@ -85,17 +100,20 @@ function appendChunk(chunks: string[], chunk: unknown): void {
 export class Interceptor {
   private readonly providers: (string | RegExp)[];
   private readonly capturePayloads: boolean;
-  private readonly logger: (entry: LlmLogEntry) => void;
+  private readonly logger: Logger;
   private readonly tokenCounter: TokenCounter;
+  private readonly providerParser: ProviderParser | undefined;
+  private readonly redaction: RedactionConfig | undefined;
 
   private installed = false;
 
   constructor(options: InterceptorOptions = {}) {
     this.providers = options.providers || DEFAULT_PROVIDERS;
     this.capturePayloads = options.capturePayloads ?? false;
-    this.logger =
-      options.logger || ((entry) => console.log(JSON.stringify(entry)));
+    this.logger = options.logger || consoleLogger;
     this.tokenCounter = options.tokenCounter || {};
+    this.providerParser = options.providerParser;
+    this.redaction = options.redaction;
   }
 
   get isInstalled(): boolean {
@@ -138,14 +156,21 @@ export class Interceptor {
       return;
     }
 
+    // Capture the pristine methods as-is (no `.bind`). We MUST not bind:
+    // a bound function ignores `.call(thisArg, ...)` and locks `this` to
+    // the prototype, so `originalEnd.call(req, ...)` would call the body
+    // with `this = proto.prototype`, not the actual ClientRequest — which
+    // makes the real implementation crash on its first `this._header`
+    // access. Calling the unbound original with `.call(this, ...)` sets
+    // `this` to the actual instance exactly as Node expects.
     const originalWrite = proto.prototype.write;
     const originalEnd = proto.prototype.end;
     const origOn = proto.prototype.on;
+    // `self` is the interceptor instance. no-this-alias is relaxed for this
+    // file (see eslint.config.mjs) because monkey-patching
+    // ClientRequest.prototype is inherently this-manipulating.
     const self = this;
 
-    // Error-path capture: a refused connection may never call write/end.
-    // Hook 'on' so attaching an 'error' listener also latches capture when
-    // the request matches. (Non-matching requests stay untouched.)
     const onWrapper = function (
       this: ClientRequest,
       event: string | symbol,
@@ -158,9 +183,12 @@ export class Interceptor {
           self.attachCapture(this, captureCallerTrace());
         }
       }
-      return origOn.call(this, event, listener);
+      return (origOn as (...args: unknown[]) => unknown).call(
+        this,
+        event,
+        listener,
+      ) as ClientRequest;
     };
-
     const writeWrapper = function (
       this: ClientRequest,
       ...args: unknown[]
@@ -179,7 +207,7 @@ export class Interceptor {
         this,
         args,
         args[0] as string | Buffer,
-      );
+      ) as boolean;
     };
     const endWrapper = function (
       this: ClientRequest,
@@ -207,7 +235,7 @@ export class Interceptor {
         this,
         args,
         args[0] as string | Buffer | undefined,
-      );
+      ) as ClientRequest;
     };
 
     Object.defineProperty(writeWrapper, 'name', { value: 'llmHttpProxyWrite' });
@@ -348,26 +376,58 @@ export class Interceptor {
     const url = deriveUrl(req);
     const callerTrace = state.callerTrace || 'unknown';
 
-    const requestObj = requestJson as Record<string, unknown> | undefined;
-    const modelValue = requestObj?.model ?? requestObj?.model_name;
-    const model = typeof modelValue === 'string' ? modelValue : 'unknown';
-    const inputTokens = this.estimateInputTokens(requestJson);
-    const outputTokens = error ? 0 : this.extractOutputTokens(responseJson);
+    // Parse step: route through the registered parser. A caller-supplied
+    // providerParser fully replaces the default registry; otherwise the
+    // registry's per-host parser runs. Legacy `tokenCounter` overrides
+    // hook into the parser's individual hooks when supplied.
+    const parser =
+      this.providerParser ??
+      resolveParser(reqHostname(req)) ??
+      resolveParser(undefined);
+    const tokenCounter = this.tokenCounter;
+    const effectiveParser: ProviderParser =
+      tokenCounter.estimateInputTokens || tokenCounter.extractOutputTokens
+        ? {
+            extractModel: parser.extractModel,
+            estimateInputTokens: (b) =>
+              tokenCounter.estimateInputTokens
+                ? tokenCounter.estimateInputTokens(b)
+                : parser.estimateInputTokens(b),
+            extractOutputTokens: (b) =>
+              tokenCounter.extractOutputTokens
+                ? tokenCounter.extractOutputTokens(b)
+                : parser.extractOutputTokens(b),
+          }
+        : parser;
+    const parsed: ParseResult = parseCall(
+      effectiveParser,
+      requestJson,
+      responseJson,
+      Boolean(error),
+    );
 
     const entry: LlmLogEntry = {
       timestamp: new Date(),
-      model,
-      inputTokens,
-      outputTokens,
+      model: parsed.model,
+      inputTokens: parsed.inputTokens,
+      outputTokens: parsed.outputTokens,
       callerTrace,
       url,
     };
     if (this.capturePayloads) {
       if (requestJson !== undefined) {
-        entry.maskedRequestBody = requestJson;
+        entry.maskedRequestBody = redact(
+          requestJson,
+          this.redaction,
+          'request',
+        );
       }
       if (responseJson !== undefined) {
-        entry.maskedResponseBody = responseJson;
+        entry.maskedResponseBody = redact(
+          responseJson,
+          this.redaction,
+          'response',
+        );
       }
     }
     if (error) {
@@ -383,22 +443,6 @@ export class Interceptor {
     } catch {
       // A throwing logger must never break the intercepted call.
     }
-  }
-
-  private estimateInputTokens(requestJson: unknown): number {
-    const custom = this.tokenCounter.estimateInputTokens;
-    if (custom) {
-      return custom(requestJson);
-    }
-    return defaultEstimateInputTokens(requestJson);
-  }
-
-  private extractOutputTokens(responseJson: unknown): number {
-    const custom = this.tokenCounter.extractOutputTokens;
-    if (custom) {
-      return custom(responseJson);
-    }
-    return defaultExtractOutputTokens(responseJson);
   }
 }
 
@@ -547,66 +591,4 @@ export function captureCallerTrace(): string {
     }
   }
   return 'unknown';
-}
-
-/**
- * Default input-token heuristic: ceil(chars / 4) over the messages/prompt/
- * input text. Mirrors the original implementation.
- */
-export function defaultEstimateInputTokens(requestJson: unknown): number {
-  const obj = requestJson as Record<string, unknown> | undefined;
-  if (!obj) {
-    return 0;
-  }
-  let text = '';
-  if (Array.isArray(obj.messages)) {
-    text = obj.messages
-      .map((m) => {
-        const message = m as Record<string, unknown>;
-        return typeof message.content === 'string' ? message.content : '';
-      })
-      .join(' ');
-  } else if (typeof obj.prompt === 'string') {
-    text = obj.prompt;
-  } else if (typeof obj.input === 'string') {
-    text = obj.input;
-  }
-  return Math.ceil(text.length / 4);
-}
-
-/**
- * Default output-token extraction: OpenAI usage.completion_tokens wins over
- * Anthropic usage.output_tokens; falls back to ceil(chars / 4) over the
- * choices/completion/output_text content.
- */
-export function defaultExtractOutputTokens(responseJson: unknown): number {
-  const obj = responseJson as Record<string, unknown> | undefined;
-  if (!obj) {
-    return 0;
-  }
-  const usage = obj.usage as Record<string, unknown> | undefined;
-  if (usage && typeof usage.completion_tokens === 'number') {
-    return usage.completion_tokens;
-  }
-  if (usage && typeof usage.output_tokens === 'number') {
-    return usage.output_tokens;
-  }
-  let text = '';
-  if (Array.isArray(obj.choices)) {
-    text = obj.choices
-      .map((c) => {
-        const choice = c as Record<string, unknown>;
-        const message = choice.message as Record<string, unknown> | undefined;
-        if (typeof message?.content === 'string') {
-          return message.content;
-        }
-        return typeof choice.text === 'string' ? choice.text : '';
-      })
-      .join(' ');
-  } else if (typeof obj.completion === 'string') {
-    text = obj.completion;
-  } else if (typeof obj.output_text === 'string') {
-    text = obj.output_text;
-  }
-  return Math.ceil(text.length / 4);
 }

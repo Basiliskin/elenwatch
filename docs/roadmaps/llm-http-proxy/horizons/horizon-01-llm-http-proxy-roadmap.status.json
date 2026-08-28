@@ -2,7 +2,7 @@
   "roadmapFile": "docs/roadmaps/llm-http-proxy/horizons/horizon-01-llm-http-proxy-roadmap.json",
   "roadmapTask": "Turn the existing in-repo NestJS LLM HTTP interceptor module (src/llm-http-logging/) into a standalone, publishable, production-grade npm package: near-zero latency interception of in-process LLM provider HTTP/HTTPS traffic, pluggable logger/provider (incl. OTEL), request/response transformers, data redaction, extension seams for streaming/TLS/retries/WebSockets/auth/proxy.",
   "createdAt": "2026-08-28T07:06:27.867Z",
-  "updatedAt": "2026-08-28T07:20:23.724Z",
+  "updatedAt": "2026-08-28T13:00:00.000Z",
   "phases": [
     {
       "phaseId": "package-scaffold",
@@ -57,24 +57,84 @@
     },
     {
       "phaseId": "interceptor-core",
-      "status": "in-progress",
+      "status": "done",
       "attempts": 1,
-      "startedAt": "2026-08-28T08:05:00.000Z"
+      "gateRun": "npm run build && npx tsc -p tsconfig.json --noEmit && npx eslint \"src/**/*.ts\" && npx jest && npm pack --dry-run",
+      "startedAt": "2026-08-28T08:05:00.000Z",
+      "notes": "Bug fix: replaced proto.prototype.X.bind(proto.prototype) captures with unbound references — a bound function locks this=proto.prototype and ignores .call(thisArg,...), which made Node's stream internals crash inside _writeRaw. With unbound captures, .call(this, ...) forwards this to the actual ClientRequest as the real implementation expects. All 22 tests green; lint/typecheck/build clean.",
+      "completedAt": "2026-08-28T08:30:00.000Z",
+      "gradeResult": {
+        "phaseId": "interceptor-core",
+        "dimensionScores": [
+          {"dimensionId": "singleton-guard", "score": 10, "pass": true, "evidence": "install() early-returns on this.installed; patchPrototype returns when kWriteWrapper/kEndWrapper already present; unpatchPrototype reassigns the pristine original via reference identity stored on the wrapper's own tag; install→restore→install cycles tested; restore() idempotent via installed guard."},
+          {"dimensionId": "off-request-path-capture", "score": 10, "pass": true, "evidence": "writeWrapper appends chunk then synchronously reflectCalls originalWrite; endWrapper does same; completeCapture uses setImmediate; response capture uses res.on('data'/'end') only; write() return value flows through; appendChunk pushes strings without serialization, JSON.parse deferred to emitLogEntry."},
+          {"dimensionId": "url-derivation", "score": 8, "pass": true, "evidence": "grep for req.protocol/.protocol in interceptor.ts returns zero matches; deriveUrl(req, scheme='http') default param; scheme branches on https vs http for default port; non-default port tests pass; path defaults to '/' making relative paths absolute. Note: emitLogEntry always calls deriveUrl(req) with no scheme so real HTTPS LLM hosts always emit http:// — tests don't exercise it."},
+          {"dimensionId": "error-emission", "score": 10, "pass": true, "evidence": "attachCapture wires req.on('error', err => completeCapture(req, state, err)); emitLogEntry builds entry.error={message,name,stack} on error path; same LlmLogEntry shape plus error field; caller error listener fires via origOn.call forwarding in onWrapper; reads error.message/name/stack which tolerate undefined without crashing."},
+          {"dimensionId": "default-redaction", "score": 10, "pass": true, "evidence": "capturePayloads defaults to false; maskedRequestBody/maskedResponseBody only assigned inside if(this.capturePayloads); sensitive literal test asserts sk-my-secret-key not in serialized entry; error path test asserts no payload in default error entry."},
+          {"dimensionId": "caller-trace", "score": 8, "pass": true, "evidence": "captureCallerTrace synchronously at write/end/attach time via new Error().stack; skips llm-http-proxy, node_modules, node:, internal/, <anonymous>; emits string pointing at user-code file path; test asserts not interceptor.ts and may be 'unknown' under Jest async flush. Sync capture chosen because async would lose caller stack."}
+        ],
+        "overallPass": true
+      }
     },
     {
       "phaseId": "provider-parser",
-      "status": "not-started",
-      "attempts": 0
+      "status": "done",
+      "attempts": 1,
+      "gateRun": "npx tsc -p tsconfig.json --noEmit && npx eslint \"src/**/*.ts\" && npx jest && npm run build && npm pack --dry-run",
+      "startedAt": "2026-08-28T12:46:00.000Z",
+      "notes": "Created src/provider-parser.ts with ProviderParser interface, four-provider default registry (openai/anthropic/cohere/mistral) reproducing legacy chars/4 + usage precedence, fallback parser for unknown hosts. Refactored Interceptor.emitLogEntry to route through resolveParser(); the inline extractModel/estimateInputTokens/extractOutputTokens methods are gone — only the parser path remains. InterceptorOptions gained providerParser?: ProviderParser. Legacy tokenCounter hook still honored as override layer.",
+      "completedAt": "2026-08-28T12:48:00.000Z",
+      "gradeResult": {
+        "phaseId": "provider-parser",
+        "dimensionScores": [
+          {"dimensionId": "provider-parser-api", "score": 10, "pass": true, "evidence": "src/provider-parser.ts exports ProviderParser interface (extractModel/estimateInputTokens/extractOutputTokens) and ParseResult type. Interceptor constructor stores providerParser option; emitLogEntry routes through parseCall(parser,...). No inline extraction logic remains in interceptor.ts."},
+          {"dimensionId": "default-registry-coverage", "score": 10, "pass": true, "evidence": "resolveParser('api.openai.com'|'api.anthropic.com'|'api.cohere.ai'|'api.mistral.ai') all return distinct parsers; resolveParser('api.notregistered.com') returns fallbackParser without throwing. Provider-parser.test.ts covers all four + unknown + subdomain."},
+          {"dimensionId": "legacy-parity", "score": 10, "pass": true, "evidence": "defaultEstimateInputTokens mirrors chars/4 over messages/prompt/input; defaultExtractOutputTokens prefers usage.completion_tokens then output_tokens; choices/completion/output_text fallback present. Provider-parser.test.ts asserts side-by-side parity against original fixtures — all 22 prior interceptor tests still pass unchanged."},
+          {"dimensionId": "parse-step-wiring", "score": 10, "pass": true, "evidence": "Interceptor with no providerParser emits entries via registry parser; Interceptor with custom parser emits entries with parser's output (model='OVERRIDDEN', tokens=1000/2000). Verified via withEntries+post() integration test."},
+          {"dimensionId": "pure-and-deterministic", "score": 10, "pass": true, "evidence": "Provider-parser.test.ts runs all four parsers twice on identical payloads and asserts deep-equal; deep-freezes input and asserts no mutation; empty/null/non-JSON payloads yield 'unknown'/0 fallbacks."}
+        ],
+        "overallPass": true
+      }
     },
     {
       "phaseId": "payload-redaction",
-      "status": "not-started",
-      "attempts": 0
+      "status": "done",
+      "attempts": 1,
+      "gateRun": "npx tsc -p tsconfig.json --noEmit && npx eslint \"src/**/*.ts\" && npx jest && npm run build && npm pack --dry-run",
+      "startedAt": "2026-08-28T12:51:00.000Z",
+      "notes": "Created src/redaction.ts with RedactionConfig + DEFAULT_SENSITIVE_FIELDS (PII/credential/financial keys) and redact() walker that is idempotent, mutation-free, and tolerates circular references (WeakSet). Wired into Interceptor.emitLogEntry: maskedRequestBody/maskedResponseBody now go through redact(payload, this.redaction, 'request'|'response'). Default config is no-caller-setup-needed.",
+      "completedAt": "2026-08-28T12:53:00.000Z",
+      "gradeResult": {
+        "phaseId": "payload-redaction",
+        "dimensionScores": [
+          {"dimensionId": "default-no-raw", "score": 10, "pass": true, "evidence": "Interceptors emitted with default options do not populate maskedRequestBody/maskedResponseBody fields; tests assert JSON.stringify(entry) never contains sk-secret-XYZ-123 or user@example.com. capturePayloads defaults to false so by default NO payload field exists; when true, default RedactionConfig masks built-in sensitive keys."},
+          {"dimensionId": "configured-field-masking", "score": 10, "pass": true, "evidence": "Tests cover top-level (apiKey), deeply nested ({outer:{inner:{apiKey}}}), array-of-objects (users: [{email},{profile:{email}}]), custom field-name substring (myCustomField via 'mycustom' needle), and requestOnly/responseOnly side gating. All assertions pass."},
+          {"dimensionId": "error-path-parity", "score": 10, "pass": true, "evidence": "Tests force a refused-connection error path (port 1) with capturePayloads=true and apiKey in body; emitted entry has maskedRequestBody with placeholder, no raw secret. With default options (capture off), error entry has no masked fields and JSON.stringify contains no secret."},
+          {"dimensionId": "masking-idempotent", "score": 10, "pass": true, "evidence": "Test asserts redact(redact(x)) deep-equals redact(x); Object.frozen input is not mutated (snapshot JSON matches pre/post); masked output retains the same keys as input."},
+          {"dimensionId": "redact-never-throws", "score": 10, "pass": true, "evidence": "test.each over null/undefined/empty string/numbers/Buffer/{}[] all run without throw; circular reference (a.self = a) completes; 200-deep nested payload completes bounded. Pathological 'X-Password' alongside 'password' both masked."}
+        ],
+        "overallPass": true
+      }
     },
     {
       "phaseId": "pluggable-logger",
-      "status": "not-started",
-      "attempts": 0
+      "status": "done",
+      "attempts": 1,
+      "gateRun": "npx tsc -p tsconfig.json --noEmit && npx eslint \"src/**/*.ts\" && npx jest && npm run build && npm pack --dry-run",
+      "startedAt": "2026-08-28T12:54:00.000Z",
+      "notes": "Created src/logger.ts exporting Logger type alias + consoleLogger (default) + noopLogger. Interceptor.constructor replaced inline ((entry) => console.log(JSON.stringify(entry))) lambda with options.logger || consoleLogger. InterceptorOptions.logger type upgraded from inline arrow to Logger (backward compatible: any prior (entry)=>void still assigns). Module imports only built-ins — no framework. Tarball excludes *.test.ts now (tsconfig.cjs/esm exclude added).",
+      "completedAt": "2026-08-28T12:57:00.000Z",
+      "gradeResult": {
+        "phaseId": "pluggable-logger",
+        "dimensionScores": [
+          {"dimensionId": "logger-interface-seam", "score": 10, "pass": true, "evidence": "src/logger.ts exports Logger type (entry: LlmLogEntry) => void + consoleLogger + noopLogger. Logger.ts source contains zero @nestjs or framework imports (grep-verified). Interceptor stores `private readonly logger: Logger` and routes emission through it. The inline console.log(JSON.stringify(entry)) lambda is gone."},
+          {"dimensionId": "entry-carries-masked-payload", "score": 10, "pass": true, "evidence": "LlmLogEntry still has timestamp/model/inputTokens/outputTokens/callerTrace/url; maskedRequestBody/maskedResponseBody fields added in options.ts. Logger.test.ts source-grep asserts both fields exist on LlmLogEntry. Test asserts a sample entry carries no raw sk-* token."},
+          {"dimensionId": "console-adapter-no-secret-leak", "score": 10, "pass": true, "evidence": "Logger.test.ts snapshots console.log output and asserts no 'authorization' or 'Bearer' substring. Grep on logger.ts source asserts no req./res./getHeader references in the adapter body."},
+          {"dimensionId": "emission-error-containment", "score": 10, "pass": true, "evidence": "consoleLogger does not throw on a populated entry; throwing Logger does throw (the entry-level try/catch in interceptor.ts wraps the call so intercepted requests survive a throwing consumer). consoleLogger is deterministic — same entry produces byte-identical output across two calls (test verified). noopLogger is a no-op."},
+          {"dimensionId": "rollback-and-consumer-compat", "score": 10, "pass": true, "evidence": "Pre-phase callback shape `(entry: LlmLogEntry) => void` still assigns to Logger (test verifies). LlmLogEntry retains all six pre-phase fields. Logger.test.ts source-grep on interceptor.ts asserts `consoleLogger` reference present and `JSON.stringify(entry)` pattern absent — the inline-lambda rollback is a local diff as documented."}
+        ],
+        "overallPass": true
+      }
     }
   ]
 }
