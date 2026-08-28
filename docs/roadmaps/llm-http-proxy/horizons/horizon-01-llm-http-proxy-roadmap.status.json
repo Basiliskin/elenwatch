@@ -1,0 +1,80 @@
+{
+  "roadmapFile": "docs/roadmaps/llm-http-proxy/horizons/horizon-01-llm-http-proxy-roadmap.json",
+  "roadmapTask": "Turn the existing in-repo NestJS LLM HTTP interceptor module (src/llm-http-logging/) into a standalone, publishable, production-grade npm package: near-zero latency interception of in-process LLM provider HTTP/HTTPS traffic, pluggable logger/provider (incl. OTEL), request/response transformers, data redaction, extension seams for streaming/TLS/retries/WebSockets/auth/proxy.",
+  "createdAt": "2026-08-28T07:06:27.867Z",
+  "updatedAt": "2026-08-28T07:20:23.724Z",
+  "phases": [
+    {
+      "phaseId": "package-scaffold",
+      "status": "done",
+      "attempts": 1,
+      "gateRun": "pnpm install --frozen-lockfile && npm run build && npm run lint && npm test (root node_modules absent); npm pack --dry-run; tsc --strict smoke consumers (node16/bundler)",
+      "startedAt": "2026-08-28T07:06:27.867Z",
+      "notes": "Assumed package identity: name llm-http-proxy, version 0.1.0, MIT (name verified free via npm view; unpublished so revisable).",
+      "completedAt": "2026-08-28T07:20:23.724Z",
+      "gradeResult": {
+        "phaseId": "package-scaffold",
+        "dimensionScores": [
+          {
+            "dimensionId": "dual-cjs-esm-runtime-resolution",
+            "score": 10,
+            "pass": true,
+            "evidence": "Dual trees + exports map verified via symlinked consumers (require/import through exports), types path fixed and exists; node16/bundler strict tsc pass"
+          },
+          {
+            "dimensionId": "type-declarations-emitted",
+            "score": 7,
+            "pass": true,
+            "evidence": "declaration+declarationMap emit .d.ts beside each .js; strict consumer compiles under node16/bundler resolutions"
+          },
+          {
+            "dimensionId": "publishable-manifest",
+            "score": 7,
+            "pass": true,
+            "evidence": "name/version/license real, no private, pack --dry-run exits 0 with 12-file tarball (LICENSE, dist/cjs, dist/esm, package.json) - no src/config leaks"
+          },
+          {
+            "dimensionId": "standalone-from-root-scaffold",
+            "score": 8,
+            "pass": true,
+            "evidence": "Own lockfile+configs; frozen pnpm install with root node_modules absent; build/lint/test pass; no @nestjs deps; npm ci N/A (pnpm repo)"
+          },
+          {
+            "dimensionId": "repeatable-clean-build",
+            "score": 10,
+            "pass": true,
+            "evidence": "Clean→build, re-build, rm -rf dist→build all succeed; dist shasum 8003d220... byte-identical across builds; nothing written outside packages/"
+          },
+          {
+            "dimensionId": "rollback-safe-scaffold",
+            "score": 10,
+            "pass": true,
+            "evidence": "git status shows only untracked packages/ + pre-existing docs/; zero tracked root file modifications; root package.json untouched"
+          }
+        ],
+        "overallPass": true
+      }
+    },
+    {
+      "phaseId": "interceptor-core",
+      "status": "in-progress",
+      "attempts": 1,
+      "startedAt": "2026-08-28T08:05:00.000Z"
+    },
+    {
+      "phaseId": "provider-parser",
+      "status": "not-started",
+      "attempts": 0
+    },
+    {
+      "phaseId": "payload-redaction",
+      "status": "not-started",
+      "attempts": 0
+    },
+    {
+      "phaseId": "pluggable-logger",
+      "status": "not-started",
+      "attempts": 0
+    }
+  ]
+}

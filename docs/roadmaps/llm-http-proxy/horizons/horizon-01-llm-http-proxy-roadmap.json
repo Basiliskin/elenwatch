@@ -1,0 +1,730 @@
+{
+  "task": "Turn the existing in-repo NestJS LLM HTTP interceptor module (src/llm-http-logging/) into a standalone, publishable, production-grade npm package: near-zero latency interception of in-process LLM provider HTTP/HTTPS traffic, pluggable logger/provider (incl. OTEL), request/response transformers, data redaction, extension seams for streaming/TLS/retries/WebSockets/auth/proxy. Prompts can contain PII, customer data, passwords, financial data, source code, medical information, internal documents — sensitive data must be protected (redacted, not logged raw by default).",
+  "analysis": {
+    "objective": "Turn the existing in-repo NestJS LLM HTTP interceptor module (src/llm-http-logging/) into a standalone, publishable, production-grade npm package that intercepts in-process LLM provider HTTP/HTTPS traffic with near-zero latency overhead and pluggable loggers/providers (incl. OTEL), request/response transformers, and data redaction.",
+    "successDefinition": "A standalone package directory with its own package.json that builds to a publishable dist (no hard NestJS/reflect-metadata runtime dependency; thin optional Nest adapter may exist), whose singleton-safe http/https patch reproduces today's capability (model extraction, token estimation, url, caller trace per log entry) with all gates green (`npm run build`, `npm run lint`, `npm test`). Latency: a benchmark proves buffered (non-streaming) interception overhead stays within an explicit budget (e.g. <1ms p50 / <2% p99 added latency) and no work beyond body capture happens on the request path. Extension interfaces exist and are demonstrated: pluggable logger + per-provider parser with a default console logger and an OTEL span exporter that activates only when optional @opentelemetry/* peer deps are installed. Input/output transformers run in the enforced order — request transformed before send, response transformed before return to caller — with tests proving both ordering and that mutated bodies reach the wire/caller intact. Redaction: default config logs NO raw bodies; configured sensitive fields (PII/password/financial keys) are masked; a test asserts no raw sensitive value appears in any emitted log entry or span, including error paths. Horizon scoping (named, not silently trimmed): the paragraphs above state the FULL objective's success bars. This horizon (horizon-0) keeps five phases (package-scaffold, interceptor-core, provider-parser, payload-redaction, pluggable-logger) and defers three of the full-objective success bars to the next horizon: the latency-budget benchmark (Latency paragraph), the enforced-order input/output transformer pipeline, and the OTEL span exporter demo. Those deferrals are recorded in the deferred list, whose entries are explicitly marked as full-objective success bars, and horizon-0's successCriteria certify ONLY the kept-phase subset, NOT this full successDefinition: completing horizon-0 does not mean the latency benchmark, transformers, or OTEL exporter are proven, and the deferred entries remain the success bars to be verified in the next horizon.",
+    "assumptions": [
+      "Requirement 4's 'can be extended to manage' means the package ships extension points (pluggable hooks/interfaces) for streaming, TLS, provider-specific APIs, retries, WebSockets, auth, proxy, deployment complexity — not built-in implementations of all of them; built-in support covers buffered HTTP/HTTPS in this horizon.",
+      "The package is developed in-repo (e.g. under packages/) and 'external' means publishable/distributable; actual registry publication and a CI release pipeline are deferred.",
+      "The existing src/llm-http-logging module in this app will be migrated to consume the new package to prove it works, but nothing else in the app is rewritten.",
+      "OTEL SDKs are optional peerDependencies; the package must build, install, and function with zero OTEL/observability deps present.",
+      "The default rough token heuristic (chars/4, usage-token extraction) is retained as the pluggable default; exact provider tokenizers are out of scope.",
+      "Latency budget is defined for the buffered, non-streaming path; streaming (SSE) interception unavoidably costs more and is budgeted separately.",
+      "Node.js >=18 (native streams/AsyncLocalStorage) is assumed as the runtime baseline."
+    ],
+    "risks": [
+      "The latency-budget vs. body-capture conflict is real and structural: capturing full request bodies and reconstructing response bodies requires buffering, which directly contradicts 'as close to 0 latency as possible' — worst on streaming/SSE where buffering delays the first token; the plan must budget this explicitly rather than silently promising both.",
+      "Monkey-patching http/https module functions is process-global: multiple package instances, double-patching, or coexisting APM agents (Datadog/NewRelic) can clobber each other; needs singleton guards and a defensive design.",
+      "Transformers that mutate bodies risk breaking protocol correctness — stale Content-Length/chunked encoding, wrong data handed back to the caller, or a transformed response never reaching streaming consumers — which can corrupt provider calls and app behavior.",
+      "Redaction is easy to bypass: raw values can leak through error paths, headers, metadata/caller trace, or third-party loggers that don't honor the masking config; must be tested on every emission path, not just the happy path.",
+      "Packaging pitfalls: a hidden NestJS/runtime dependency, a broken dual ESM/CJS build, or missing .d.ts files makes the package unusable for non-Nest consumers despite the 'external package' requirement.",
+      "OTEL version skew or inadvertently hard-bundling heavy telemetry deps would violate the near-zero-latency and lean-package goals.",
+      "Over-building extension points for problems in requirement 4 that no consumer exercises (YAGNI gate 3) inflates the package without a second implementation justifying each interface.",
+      "Benchmarking real provider calls is flaky; latency claims must be reproducible against fixtures, or the success bar cannot be checked."
+    ],
+    "outOfScope": [
+      "Publishing to an npm registry or standing up a CI release pipeline — deliverable is a buildable/publishable package in-repo; publication is deferred.",
+      "Built-in implementations of retries, TLS customization, WebSocket/long-poll interception, auth token injection, or provider SDK forks — requirement 4 demands extension points, not shipped solutions for each.",
+      "Exact token counting via provider tokenizers (tiktoken etc.) — the pluggable heuristic default is retained.",
+      "Observability infrastructure (dashboards, alerting, tracing backends) — the package only emits log entries/spans; consumers build the infrastructure.",
+      "Migrating anything in elenwatch beyond the existing src/llm-http-logging module — the rest of the app is untouched.",
+      "First-class streaming/SSE response interception — specified as an extension seam, not a built, buffered feature in this horizon.",
+      "Secret/credential storage and redaction policy management UIs — the package masks; it does not manage policies or secrets.",
+      "Multi-process propagation and HTTP agent/keep-alive connection-reuse optimization — out of the interceptor's scope."
+    ],
+    "domainShape": "technical",
+    "domainShapeReason": "The objective is about machinery — patching http/https, buffering payloads, transforming bodies, redacting fields, emitting spans — not about any business entities, rules, or workflows a domain expert would recognize; it is library/tooling engineering.",
+    "ubiquitousLanguage": [
+      {
+        "term": "interceptor",
+        "meaning": "the component that taps in-process http/https requests to LLM providers"
+      },
+      {
+        "term": "provider",
+        "meaning": "an LLM vendor (OpenAI, Anthropic, etc.) whose API the interceptor recognizes"
+      },
+      {
+        "term": "transformer",
+        "meaning": "a pluggable function that rewrites a request or response payload before it proceeds"
+      },
+      {
+        "term": "redaction",
+        "meaning": "masking sensitive values (PII, secrets, financial data) so they never appear in emitted logs/spans"
+      },
+      {
+        "term": "span",
+        "meaning": "the OTEL telemetry unit emitted per intercepted call when the optional telemetry exporter is enabled"
+      },
+      {
+        "term": "payload",
+        "meaning": "the raw request or response body being captured, transformed, or logged"
+      },
+      {
+        "term": "latency overhead",
+        "meaning": "the added time an intercepted call pays versus an untouched call"
+      },
+      {
+        "term": "log entry",
+        "meaning": "the structured record emitted per call by the pluggable logger"
+      }
+    ]
+  },
+  "discoveryFindings": [
+    {
+      "area": "module inventory",
+      "finding": "src/llm-http-logging/ contains exactly two files (~265 LOC total): llm-http-interceptor.service.ts (216 lines) and llm-http-logging.module.ts (49 lines). The service monkey-patches http.request/https.request in OnModuleInit, wraps req.write/req.end to capture request body, listens on res 'data'/'end' for response body, and emits via a console.log default logger. It already implements the four capabilities named in the success definition: model extraction (requestJson.model/model_name), token estimation (chars/4 heuristic + usage.completion_tokens/output_tokens extraction), url (req.protocol/host/path), caller trace (Error().stack walk).",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/src/llm-http-logging/llm-http-interceptor.service.ts",
+      "implication": "The package extraction is a rewrite of a small, self-contained component — not a refactor of a large surface. The four existing capabilities map 1:1 to the per-provider parser extension point; nothing beyond them exists to preserve."
+    },
+    {
+      "area": "public API contract",
+      "finding": "Existing exported contract is LlmHttpLoggingOptions{providers?: (string|RegExp)[] with defaults api.openai.com/api.anthropic.com/api.cohere.ai/api.mistral.ai, logger?: (entry: LlmLogEntry)=>void, tokenCounter?: {estimateInputTokens?, extractOutputTokens?}} and LlmLogEntry{timestamp: Date, model, inputTokens, outputTokens, callerTrace, url}. Registered via LlmHttpLoggingModule.register(options) static DynamicModule factory.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/src/llm-http-logging/llm-http-logging.module.ts",
+      "implication": "These option/entry shapes are the existing logical API to carry into the standalone package (retrofitted with transformers/redaction/provider/logger interfaces). The 'provider' concept in the task maps naturally onto today's hardcoded provider list + tokenCounter; there is no separate per-provider parser type today — it must be designed, not migrated."
+    },
+    {
+      "area": "NestJS coupling",
+      "finding": "The module has hard runtime dependencies on @nestjs/common (@Injectable, OnModuleInit, @Module, DynamicModule, Provider) and is consumed only in src/app.module.ts via LlmHttpLoggingModule.register({providers:['api.openai.com','api.anthropic.com'], logger:...}). The app is a stock Nest scaffold (Hello World controller) otherwise untouched by LLM concerns.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/src/app.module.ts",
+      "implication": "The Nest adapter to be severed is exactly: decorators on the service, the DynamicModule factory, and the app.module.ts import site. Plan should include a thin optional Nest wrapper (as the analysis assumes) and migrate app.module.ts to consume the new package to prove it — this is the only consumer in the repo."
+    },
+    {
+      "area": "packaging/architecture realities",
+      "finding": "No packages/ (or any) monorepo layout exists; no lockfile present; repo build is nest build (tsc) emitting CommonJS (module: commonjs, target: ES2023) into ./dist with declaration:true; jest config lives in package.json (rootDir src, .spec.ts regex, ts-jest); lint is ESLint 9 flat config (eslint.config.mjs, typescript-eslint recommendedTypeChecked + prettier); tsconfig.build.json excludes **/*spec.ts. Root package.json is private:true — not publishable as-is.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/package.json",
+      "implication": "The assumption 'developed in-repo (e.g. under packages/)' requires creating a new packages/<name>/ directory from scratch: its own package.json (name/version does not exist yet), its own dual ESM/CJS tsconfig, its own jest/eslint/benchmark configs — the root Nest-centric tsconfig and jest config are not reusable for a publishable lib. Also no lockfile: plan's dependency-acquisition steps must generate one."
+    },
+    {
+      "area": "existing gaps (purely additive)",
+      "finding": "Grep confirms zero occurrences of @opentelemetry/*, AsyncLocalStorage, streams/SSE handling, redaction, or transformer concepts anywhere in the repo. The service's req 'error' handler is empty (errors are swallowed), there is no unit/e2e spec for the module (only app.controller.spec.ts), no benchmark infra, and no README.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/src/llm-http-logging/llm-http-interceptor.service.ts",
+      "implication": "OTEL exporter, redaction, transformers, streaming/TLS/retries/WebSocket/auth/proxy seams, and benchmark fixtures are all greenfield — nothing to reconcile against, but the empty error handler means the 'no raw sensitive value on error paths' redaction test has no existing coverage to extend and today's error behavior silently loses data (a behavior regression risk when adding error-path logging)."
+    },
+    {
+      "area": "latency-relevant implementation detail",
+      "finding": "Current interception performs NO work on the request path that blocks the caller: buffering happens in the wrapped write/end/response-data callbacks after originalRequest is invoked; request is issued first, then interceptRequest wires listeners. Model/token extraction runs only at response 'end'. (Latent bug: url built from req.protocol which ClientRequest does not set — url host is undefined downstream; and no Content-Length accounting when mutating bodies.)",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/src/llm-http-logging/llm-http-interceptor.service.ts",
+      "implication": "The near-zero-latency success bar is already structurally met by today's design (deferred off-path work), so the plan's benchmark gates can target preserving that ordering. But transformer support that mutates bodies will introduce the structural risk the analysis flags (stale Content-Length), and the existing url extraction bug should be fixed in the rewrite."
+    }
+  ],
+  "requiredMaterials": [
+    {
+      "name": "Package identity and licensing decision (name, version, license)",
+      "kind": "knowledge",
+      "whyNeeded": "The root package.json is private:true / UNLICENSED and no name/version exists for the new package; a publishable artifact needs a chosen npm name (must not collide on the registry), a starting version, a license expression, and repo/bugs/homepage metadata. None of this can be derived from the repo — it is a maintainer decision the work cannot proceed without.",
+      "acquisitionNote": "Decide with the maintainer (e.g. version 0.1.0, MIT or Apache-2.0); verify the name is available via `npm view <name>` against registry.npmjs.org."
+    },
+    {
+      "name": "Explicit latency budget and benchmark methodology approval",
+      "kind": "knowledge",
+      "whyNeeded": "The success bar requires an explicit budget, but the analysis only gives an example ('e.g. <1ms p50 / <2% p99'); the concrete numbers, the reference hardware, and the measurement method (fixture-based, cold vs warm, iterations) must be fixed before the benchmark gate and its fixture harness can be authored reproducibly — without it the gate cannot be checked (flagged risk).",
+      "acquisitionNote": "Maintainer/engineering sign-off on a written budget and methodology; the benchmark fixtures themselves are synthesized in-repo, not externally sourced."
+    },
+    {
+      "name": "Multi-Node-major test runtime set (Node 18/20/22 LTS)",
+      "kind": "tool",
+      "whyNeeded": "Baseline is Node >=18, but the interceptor rewrites http/https module internals (req.write/req.end, response 'data'/'end') and ships a dual ESM/CJS build; production-grade support must be verified on the shipping LTS majors actually targeted, since internal stream/Response/AsyncLocalStorage behavior differs across majors. Without these runtimes the claimed support matrix cannot be validated.",
+      "acquisitionNote": "Run the build/test/lint gates on each target major via a version manager (nvm/FNM) or Docker images node:18/20/22-alpine."
+    },
+    {
+      "name": "npm registry authentication for publish dry-run verification",
+      "kind": "credential",
+      "whyNeeded": "\"Publishable\" is a success gate; validating it properly requires `npm publish --dry-run` / pack metadata checks against the real registry (name collision, files list, publishConfig, peerDep resolution) and a clean tarball install, which need an authenticated npm account rather than only offline `npm pack`.",
+      "acquisitionNote": "Ensure the executor's npm CLI passes `npm whoami` (login or NODE_AUTH_TOKEN); no actual publication is performed."
+    },
+    {
+      "name": "Clean non-Nest consumer sandbox",
+      "kind": "tool",
+      "whyNeeded": "The package must prove it has no hard NestJS/reflect-metadata runtime dependency and installs/loads fine in a plain Node project with zero OTEL deps present — the in-repo migration (app.module.ts) cannot prove this because the app itself carries Nest. A throwaway consumer environment is required to smoke-test the packed tarball (require + import, both ESM and CJS entries, optional peer deps absent).",
+      "acquisitionNote": "Scaffold a minimal Node >=18 project outside the repo (or a temp dir) and `npm install` the local tarball produced by `npm pack`; discard after the smoke check."
+    }
+  ],
+  "phases": [
+    {
+      "id": "package-scaffold",
+      "order": 0,
+      "name": "Standalone package scaffold: publishable dual CJS/ESM build",
+      "goal": "Stand up a new packages/<name>/ directory with its own package.json (name/version/license from the package-identity decision), a dual CJS/ESM tsconfig emitting .d.ts declarations, jest and eslint configs, and a build script chain so the interceptor package has a buildable, lintable, testable foundation independent of the root Nest scaffold, including a generated lockfile.",
+      "boundedContext": "package packaging",
+      "layer": "cross-cutting",
+      "blastRadius": "small",
+      "inputs": [
+        "package identity decision (name, version, license) — required material",
+        "discovery findings: no packages/ monorepo layout exists; root package.json is private:true with no lockfile; root tsconfig/jest are Nest-centric and not reusable",
+        "root package.json / tsconfig.build.json / eslint.config.mjs / jest config as reference conventions",
+        "analysis objective: a standalone, publishable npm package with no hard NestJS runtime dependency"
+      ],
+      "expectedResult": "packages/<name>/ directory whose npm run build emits a dual CJS/ESM dist with .d.ts declarations and whose npm run lint and npm test pass on the empty package, with a lockfile generated",
+      "dependsOn": [],
+      "compensation": "Delete the packages/<name>/ directory and any root workspace references — nothing outside it depends on it yet.",
+      "rubric": [
+        {
+          "id": "dual-cjs-esm-runtime-resolution",
+          "label": "Dual CJS/ESM runtime resolution",
+          "ruleStatement": "The built package must be loadable by both `require()` and `import()` from a plain Node consumer, via a correct `exports` condition map wiring each module-system condition to a real dist artifact it can actually execute.",
+          "passCriteria": [
+            "`npm run build` emits two format trees (e.g. `dist/cjs/*.js` and `dist/esm/*.js`), one authored as CommonJS and one as ESM",
+            "`package.json` `exports` defines `require` → the CJS artifact, `import` → the ESM artifact, and a `types` condition resolving to a `.d.ts`",
+            "From a temp dir outside the repo, `node -e \"require('packages/<name>')\"` resolves and returns the module",
+            "From a temp `.mjs` consumer, dynamic `import('packages/<name>')` resolves and exposes the same public API",
+            "dist contains no `.ts` source remnants and no leaked `src/` tree"
+          ],
+          "failureExamples": [
+            "`import()` throws `ERR_REQUIRE_ESM` or `ERR_PACKAGE_PATH_NOT_EXPORTED`",
+            "Both `require` and `import` conditions point at the same single-format file, so one consumer class silently breaks",
+            "There is no `exports` field and `main` points at ESM output, breaking every CommonJS consumer"
+          ],
+          "minScore": 9
+        },
+        {
+          "id": "type-declarations-emitted",
+          "label": "Complete type declarations in dist",
+          "ruleStatement": "The build must emit a `.d.ts` declaration for every entry point, reachable through `types`/`exports`, such that a fresh strict TS consumer compiles with no missing-module or implicit-`any` errors.",
+          "passCriteria": [
+            "The build tsconfig sets `declaration: true` (and `declarationMap: true`) and dist contains a `.d.ts` beside each emitted `.js`",
+            "`exports.types` (or top-level `types`) points at a declaration file that exists after build",
+            "A throwaway consumer doing `import ... from 'packages/<name>'` compiles under `tsc --strict --noEmit --skipLibCheck false`",
+            "Declaration emit is not accidentally short-circuited (no `noEmit`/`isolatedModules` misconfiguration in the build path)"
+          ],
+          "failureExamples": [
+            "dist has no `.d.ts`; TS consumers get `Could not find a declaration file for module`",
+            "The `types` path resolves to a nonexistent file, hidden only because consumers run `skipLibCheck`",
+            "Declarations emit only for the entry file, leaving the real exports typed as `any`"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "publishable-manifest",
+          "label": "Publishable package manifest",
+          "ruleStatement": "The manifest must carry the decided non-placeholder `name`, `version`, and `license`, be non-private, and restrict the tarball to published artifacts, so `npm pack --dry-run` output is exactly what would ship to the registry.",
+          "passCriteria": [
+            "`name`, `version`, and `license` hold real values from the package-identity decision (not `0.0.0`, `TODO`, or an unlicensed default)",
+            "`private` is absent or `false`, and `npm pack --dry-run` exits 0",
+            "`files` (or `.npmignore`) allows dist, README, and LICENSE but excludes `src`, `test`, configs, and `node_modules`",
+            "`npm pack --dry-run --json` tarball listing contains no root-scaffold or dev-only files"
+          ],
+          "failureExamples": [
+            "`\"private\": true` is still present, so `npm publish` refuses before anything ships",
+            "Tarball installs but nothing resolves because `main`/`module`/`types` are unset or wrong",
+            "The tarball leaks `src/` or a root-level config file into the published artifact"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "standalone-from-root-scaffold",
+          "label": "No coupling to the root Nest scaffold",
+          "ruleStatement": "The package must build, lint, and test using only its own configs and its own dependency tree — no source import escaping `packages/<name>/` and no hard `@nestjs/*` runtime dependency — so a green pass does not silently depend on the ambient root workspace `node_modules`.",
+          "passCriteria": [
+            "No source import path escapes the package directory (no `../../` or absolute paths reaching root repo files)",
+            "`dependencies` contains no `@nestjs/*`; `@nestjs/*` appears only in `devDependencies`/`peerDependencies` if explicitly declared and justified",
+            "With the root `node_modules` temporarily renamed, `npm ci && npm run build && npm test` inside the package still succeed from the package's own lockfile",
+            "The package tsconfig does not `extend` any root config and sets its own `rootDir`/`outDir` inside the package"
+          ],
+          "failureExamples": [
+            "A source file does `from '../../shared/interceptor'`, reaching outside the package",
+            "Build, lint, and test pass only because the root Nest `node_modules` happens to be present, then fail in a fresh checkout",
+            "`@nestjs/common` sits in `dependencies`, contradicting the goal of no hard NestJS runtime dependency"
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "repeatable-clean-build",
+          "label": "Idempotent, deterministic build",
+          "ruleStatement": "The build script chain must be safe to re-run and reproducible: cleaning then rebuilding always succeeds, repeated builds from the same source produce an identical dist, and the build writes nothing outside the package directory.",
+          "passCriteria": [
+            "On a pristine checkout, `npm run clean && npm run build` succeeds",
+            "Immediately re-running `npm run build` succeeds with no stale-artifact errors",
+            "`rm -rf dist && npm run build` leaves no remnants from a prior format or config",
+            "A sorted hash of all dist files (`find dist -type f -exec shasum {} ; | sort`) is byte-identical across two consecutive builds",
+            "`git status` after a build shows no files written outside `packages/<name>/`"
+          ],
+          "failureExamples": [
+            "The second build fails with `ENOENT` because the first run consumed or renamed an input",
+            "Old ESM artifacts linger next to rebuilt CJS output after a config change, so consumers resolve the wrong format",
+            "The build writes `dist` or temp files into the repo root instead of the package directory"
+          ],
+          "minScore": 6
+        },
+        {
+          "id": "rollback-safe-scaffold",
+          "label": "Rollback-safe: root workspace untouched",
+          "ruleStatement": "The phase must leave every tracked root file unmodified and introduce only the new `packages/<name>/` tree, so the documented compensation (delete the directory) restores the repo to its exact prior state.",
+          "passCriteria": [
+            "`git status --porcelain` shows only the new untracked `packages/<name>/` tree and zero modifications to tracked root files",
+            "Root `package.json` remains `private: true` with no added `workspaces` or changed scripts",
+            "No root-level lockfile or dependency tree was created or modified",
+            "Deleting `packages/<name>/` and re-running `git status` yields a clean tree identical to the pre-phase state"
+          ],
+          "failureExamples": [
+            "Root `package.json` gained a `workspaces` entry or a rewritten script, coupling the monorepo to the new package",
+            "A stray `node_modules`, lockfile, or `dist` appeared at the repo root",
+            "`git status` shows edits to root configs that the phase did not declare as its inputs"
+          ],
+          "minScore": 6
+        }
+      ],
+      "healerHint": "Most likely failure: build, lint, and test pass only because Node resolution finds `@nestjs/*` in the ambient root `node_modules` — rename root `node_modules` to `node_modules.bak`, re-run `npm run build && npm test` until they pass off the package's own lockfile, then declare whatever surfaced as missing in the package's own `devDependencies` and regenerate `package-lock.json`."
+    },
+    {
+      "id": "interceptor-core",
+      "order": 1,
+      "name": "Interceptor core: singleton-safe http/https payload capture with off-request-path emission",
+      "goal": "Port the de-Nested interceptor into the package: a singleton-guarded http/https patch that taps provider traffic, captures request/response payloads with no blocking work on the request path (preserving today's latency-overhead ordering), derives a correct url (fixing the req.protocol bug) and caller trace, replaces the empty error handler with an error-path emission record, and emits log entries that by default contain no raw payload.",
+      "boundedContext": "interceptor core",
+      "layer": "infrastructure",
+      "blastRadius": "medium",
+      "inputs": [
+        "package-scaffold deliverable (buildable packages/<name>/ skeleton)",
+        "src/llm-http-logging/llm-http-interceptor.service.ts (port source: patch, wrapped write/end capture, response data/end listeners, four capabilities)",
+        "discovery findings: deferred off-request-path capture ordering, req.protocol url bug, empty error handler (errors swallowed)",
+        "src/llm-http-logging/llm-http-logging.module.ts (public options/entry contract to carry over)"
+      ],
+      "expectedResult": "src/interceptor.ts — the Nest-free Interceptor class with a singleton guard and restore() hook, off-request-path payload capture, fixed url derivation, caller-trace extraction, error-path emission, and an options seam whose default emission produces log entries free of raw payloads — exported as the package entry, with unit tests proving double-patch safety and that no capture work runs before the original request is issued",
+      "dependsOn": [
+        "package-scaffold"
+      ],
+      "compensation": "The singleton's restore() reinstates the original http.request/https.request; invoking it and deleting the module files undoes the process-global patch.",
+      "rubric": [
+        {
+          "id": "singleton-guard",
+          "label": "Singleton install & restore safety",
+          "ruleStatement": "The interceptor must be installable only once process-wide: repeated install() calls and multiple Interceptor instances are no-ops (never stacking wrappers), and restore() must reinstate the exact original http.request/https.request references, making double-patch and rollback provably safe.",
+          "passCriteria": [
+            "Unit test asserts calling install() twice in sequence leaves exactly one wrapper layer: a request flows through exactly one interception (nonce/counter seen by the request == 1).",
+            "Unit test asserts restoring after install() reinstates the original http.request/https.request by reference identity (=== against the pre-install captured originals).",
+            "Unit test covers install→restore→install cycles with no leaked module-level state (repeatable).",
+            "A second `new Interceptor()` while one is active adds no additional patch.",
+            "restore() is idempotent — calling it when not installed is a safe no-op."
+          ],
+          "failureExamples": [
+            "install() twice stacks two wrappers so a single request is captured/transformed twice.",
+            "restore() decrements a counter or pops from a stack, leaving a live wrapper in the chain.",
+            "Creating a second Interceptor patches over the first and restore() from either instance leaves the process still patched.",
+            "restore() throws or mutates global state when nothing was installed."
+          ],
+          "minScore": 9
+        },
+        {
+          "id": "off-request-path-capture",
+          "label": "Off-request-path capture ordering",
+          "ruleStatement": "No capture, transformation, serialization, or emission work may run on the synchronous request path; the original request write/end must be issued before any payload work in the same tick, and response payload assembly must happen via async data/end listeners so today's latency-overhead ordering is preserved.",
+          "passCriteria": [
+            "The patched write/end forward through to the original request synchronously first; payload capture/serialization/queueing is deferred to a later tick (setImmediate/socket-flush/response listeners).",
+            "Ordering unit test: a probe attached to the original request fires before any capture-side code runs.",
+            "Response capture uses 'data'/'end' listeners only — no body building or JSON parse/stringify inside the write/end patch.",
+            "write() still returns a boolean/fulfills the stream contract and arguments are forwarded unmodified (no await, no re-wrap).",
+            "A large payload does not block the event loop during request emission (no synchronous full-body stringify on the request path)."
+          ],
+          "failureExamples": [
+            "The wrapper stringifies the request body before calling the original request (latency regression on the hot path).",
+            "Ordering test shows capture-side callback running before the original request probe.",
+            "write() no longer returns the expected value, breaking backpressure.",
+            "The write patch awaits a transformer function, making the request path async and reordering downstream code."
+          ],
+          "minScore": 9
+        },
+        {
+          "id": "url-derivation",
+          "label": "Correct derived URL (req.protocol bug fixed)",
+          "ruleStatement": "The url derived for each intercepted call must be correct in scheme, host, and path, and must never rely on the broken req.protocol property; scheme must come from the patched entry point or TLS/socket detection.",
+          "passCriteria": [
+            "src/interceptor.ts contains no read of req.protocol (grep-verified).",
+            "Scheme is derived from the patched entry point (http vs https) or socket/agent TLS state, not from the request object.",
+            "Unit tests assert https: scheme for an https call and http: for an http call.",
+            "Unit tests assert host/port/path correctness for both host-only and hostname+port option variants, including non-default ports.",
+            "A redirected/relative-path request still yields an absolute url in the emission."
+          ],
+          "failureExamples": [
+            "Derived url shows 'undefined:' or 'http:' for an https call.",
+            "Port is dropped or wrong for non-default ports.",
+            "The old req.protocol bug is still reproducible in the emitted url.",
+            "rl omits query string or path when the request used full-url options."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "error-emission",
+          "label": "Error-path emission (no swallowed errors)",
+          "ruleStatement": "A request that emits an 'error' event must produce an emission record carrying the error, replacing the old empty handler; errors must be captured into a log entry-shaped record and still propagate to the original caller's own error listeners.",
+          "passCriteria": [
+            "Unit test (e.g., a refused-connection request or a synthetically emitted error) produces exactly one emission containing the error message.",
+            "Error-path emissions carry the same field shape as normal log entries plus error info, so consumers need no special casing.",
+            "Downstream 'error' listeners attached by the original caller still fire (or the interceptor's consumption is explicitly documented and tested).",
+            "Error serialization cannot crash the process (circular/undefined error props are handled)."
+          ],
+          "failureExamples": [
+            "The 'error' listener is empty or absent — failures vanish from logs with zero emissions.",
+            "Error-path emission rethrows into the wrapper and crashes the process.",
+            "Error emission omits the error info or has a different schema than normal entries.",
+            "The interceptor consumes the error so the caller's own error handler never fires and the request hangs."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "default-redaction",
+          "label": "No raw payload in default emissions",
+          "ruleStatement": "With default options, emitted log entries must carry no raw request/response payload — sensitive literals in bodies (API keys, PII) must never appear in default-option output, on the success path or the error path; payload capture is strictly opt-in.",
+          "passCriteria": [
+            "Unit test emits with default options a request whose body contains a sensitive literal (e.g., 'sk-…' or a PII string) and asserts that literal appears nowhere in the log entry output.",
+            "Default emission schema has no populated body/payload field for both request and response.",
+            "Payload capture is gated behind an explicit option; the default options object leaves it off.",
+            "The error path is also covered: a failure whose payload contains a sensitive literal does not echo it into the default emission."
+          ],
+          "failureExamples": [
+            "Default log entry contains a payload field with the raw request body.",
+            "A sensitive literal from the request or response body appears in the default-option unit test output.",
+            "Response body leaks even though capture is not enabled.",
+            "Errors embed the raw request/response body text by default."
+          ],
+          "minScore": 9
+        },
+        {
+          "id": "caller-trace",
+          "label": "Caller trace extraction",
+          "ruleStatement": "Each emission must carry a caller trace pointing at the user code frame that issued the intercepted request — never at the interceptor's own wrapper internals — and the stack capture must not run on the request path.",
+          "passCriteria": [
+            "Unit test asserts the emission's caller field points at the test/app file that issued the request, not at src/interceptor.ts.",
+            "Internal wrapper frames are skipped; the trace begins above interceptor internals.",
+            "Caller extraction is deferred to the emission path, consistent with off-request-path capture (not on the sync request path)."
+          ],
+          "failureExamples": [
+            "The caller field points at interceptor internals (src/interceptor.ts:NN).",
+            "No caller field exists on the emission at all.",
+            "Stack-capture work blocks the request path, violating the latency ordering."
+          ],
+          "minScore": 7
+        }
+      ],
+      "healerHint": "Most likely failure is the port reintroducing synchronous payload work on the request path (the ordering test fails because capture runs before the original request issues) or a double-install stacking wrappers, so fix fastest by making the ordering and restore()-identity tests the first things you run after porting, then moving all serialization/queueing into the response listeners and a deferred callback."
+    },
+    {
+      "id": "provider-parser",
+      "order": 2,
+      "name": "Provider parser: pluggable per-provider model/token extraction with a default registry",
+      "goal": "Externalize model and token estimation behind a per-provider parser hook: define the ProviderParser interface and ship the default registry (api.openai.com, api.anthropic.com, api.cohere.ai, api.mistral.ai) carrying over today's model-field extraction, chars/4 input heuristic, and usage completion_tokens/output_tokens extraction, wired into the interceptor's parse step.",
+      "boundedContext": "provider parsing",
+      "layer": "application",
+      "blastRadius": "small",
+      "inputs": [
+        "interceptor-core deliverable (parse seam + captured request/response payload shapes)",
+        "today's extraction logic in the ported service (extractModel, chars/4 heuristic, usage completion_tokens/output_tokens extraction)",
+        "analysis ubiquitous language: provider, payload, log entry"
+      ],
+      "expectedResult": "src/provider-parser.ts — the ProviderParser interface plus the default per-provider parser registry (openai/anthropic/cohere/mistral) with the chars/4 heuristic and usage-field extraction, wired as the interceptor's parse step",
+      "dependsOn": [
+        "interceptor-core"
+      ],
+      "rubric": [
+        {
+          "id": "provider-parser-api",
+          "label": "ProviderParser is a real pluggable seam",
+          "ruleStatement": "Parsing runs through an exported ProviderParser interface — a caller-supplied parser fully replaces the default registry, and no model/token extraction logic remains inline in the interceptor.",
+          "passCriteria": [
+            "src/provider-parser.ts exports a typed ProviderParser interface covering model, input-token, and output-token extraction.",
+            "The interceptor's parse step invokes the interface/registry and contains no private extractModel/chars-per-4 replication.",
+            "Constructing the interceptor with a custom parser routes every intercepted call through it and never touches the registry."
+          ],
+          "failureExamples": [
+            "The interface is defined but the interceptor still calls private extraction methods, so swapping parsers changes nothing.",
+            "ProviderParser is unexported or untyped, so an external consumer cannot implement it.",
+            "A custom parser is accepted in options but silently ignored."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "default-registry-coverage",
+          "label": "Default registry covers all four providers",
+          "ruleStatement": "The default registry resolves a distinct parser for each declared provider host — api.openai.com, api.anthropic.com, api.cohere.ai, api.mistral.ai — and degrades to a defined fallback for unknown hosts instead of failing.",
+          "passCriteria": [
+            "Lookup by hostname returns a distinct parser for each of the four provider hosts, matching the interceptor's exact/subdomain match.",
+            "Each registered parser is addressable under the hostname the interceptor actually intercepts.",
+            "An unknown host resolves to a default parser without throwing."
+          ],
+          "failureExamples": [
+            "Registry is missing one of the four hosts (e.g., cohere falls through to the openai parser).",
+            "One generic parser is registered under four alias keys.",
+            "Lookup on an unknown host throws or returns undefined and aborts the parse step."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "legacy-parity",
+          "label": "Default parsers reproduce today's extraction exactly",
+          "ruleStatement": "On identical fixtures the default registry yields the same model and token values as today's extractModel, chars/4 heuristic, and usage completion_tokens/output_tokens extraction, including the text-fallback behavior.",
+          "passCriteria": [
+            "messages/prompt/input request shapes all produce ceil(text.length/4) input tokens.",
+            "Model is read from `model`, then `model_name`.",
+            "OpenAI usage.completion_tokens wins over Anthropic usage.output_tokens; the choices/completion/output_text fallback still yields ceil(chars/4).",
+            "A side-by-side fixture run against the current implementation and the registry outputs identical log fields."
+          ],
+          "failureExamples": [
+            "Token counts drift (floor instead of ceil, per-message rounding, whitespace counted in text).",
+            "Usage fields ignored — output tokens always come from the text fallback.",
+            "Anthropic output_tokens no longer read because field precedence changed."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "parse-step-wiring",
+          "label": "Registry is the interceptor's parse step end-to-end",
+          "ruleStatement": "An intercepted call's emitted log entry visibly flows through the registered parser — swapping the parser changes the emitted model/tokens for identical traffic, and the parse step's result is never discarded.",
+          "passCriteria": [
+            "Intercepting traffic to api.openai.com emits a log entry whose model/tokens correspond to the openai parser's output.",
+            "Overriding the parser for the same traffic changes the emitted log entry.",
+            "The parse step consumes the registry's return value, not pre-existing fields on the request/response."
+          ],
+          "failureExamples": [
+            "Log entries are hardcoded so replacing the parser changes nothing.",
+            "The parse step invokes the registry but discards the result and logs fields fetched from elsewhere.",
+            "The parser's output for model/tokens arrives at logging in a different shape than the registry returned."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "pure-and-deterministic",
+          "label": "Parsing is deterministic and side-effect-free",
+          "ruleStatement": "Parsing is repeatable (same input always yields the same output) and never mutates the request/response payload — so transformers and redaction running after the parse step see the intact payload — and malformed payloads fall back instead of throwing.",
+          "passCriteria": [
+            "Running any registry parser twice on the same payload returns deep-equal results.",
+            "Deep-equal payload comparison passes before/after parse for all four parsers.",
+            "Empty, non-JSON, or usage-less payloads yield 'unknown'/0 fallbacks instead of throwing."
+          ],
+          "failureExamples": [
+            "Parser consumes a stream/reader so a second invocation returns different counts.",
+            "Parser writes fields onto the payload (e.g., an injected _tokens key) that later surface in redacted logs.",
+            "A non-JSON or incomplete response throws out of the parse step and aborts parsing."
+          ],
+          "minScore": 7
+        }
+      ],
+      "healerHint": "Most likely the registry passes its own synthetic fixtures but has drifted from today's extraction — or the interceptor still calls the old private methods — so run both implementations side-by-side on the same fixtures, assert identical log entries, and delete the ported extraction code so only the registry path compiles."
+    },
+    {
+      "id": "payload-redaction",
+      "order": 3,
+      "name": "Payload redaction: no-raw-by-default masking on every emission path",
+      "goal": "Add the redaction module — RedactionConfig plus masking functions for sensitive fields (PII, passwords, financial data) — and wire it into every emission path (success and error) so configured fields are masked and the default config keeps raw payloads out of all log entries, with a test asserting no raw sensitive value reaches an emitted log entry even on error paths.",
+      "boundedContext": "payload redaction",
+      "layer": "infrastructure",
+      "blastRadius": "medium",
+      "inputs": [
+        "interceptor-core deliverable (emission call sites incl. the error path)",
+        "task requirement: prompts may contain PII, passwords, financial data, source code, medical information — redacted, not logged raw by default",
+        "success-definition redaction bar: no raw sensitive value in any emitted log entry, including error paths"
+      ],
+      "expectedResult": "src/redaction.ts — the redaction module (RedactionConfig + masking functions) wired into every emission path so the default config logs no raw bodies and configured sensitive fields are masked, with tests proving no raw sensitive value appears in any emitted log entry on the happy or error path",
+      "dependsOn": [
+        "interceptor-core"
+      ],
+      "compensation": "Removing the redaction wiring restores the interceptor's phase-1 no-raw emission default — log entries revert to payload-free with no consumer-visible contract change.",
+      "rubric": [
+        {
+          "id": "default-no-raw",
+          "label": "Default config never emits raw payloads",
+          "ruleStatement": "With the shipped default RedactionConfig and zero caller setup, no raw request or response payload content appears in any emitted log entry, on success or error emission paths.",
+          "passCriteria": [
+            "A test asserts that log entries emitted for a successful intercepted call contain no raw payload content under the default config",
+            "A test asserts the same holds for the error-path emission (e.g., provider 5xx)",
+            "src/redaction.ts exports a default RedactionConfig that requires no caller configuration to achieve no-raw emission"
+          ],
+          "failureExamples": [
+            "Default config logs full request/response bodies verbatim",
+            "Success-path entries are clean but error-path entries leak the raw body",
+            "Caller must pass an explicit RedactionConfig to get no-raw behavior"
+          ],
+          "minScore": 9
+        },
+        {
+          "id": "configured-field-masking",
+          "label": "Configured sensitive fields are masked wherever they appear",
+          "ruleStatement": "Fields the caller marks sensitive in RedactionConfig are replaced with a redaction placeholder in every position they occur — top-level, deeply nested, inside arrays, and in both request and response payloads — and the true value never appears in the emitted entry.",
+          "passCriteria": [
+            "Tests configure a top-level sensitive field and assert the entry contains the masking placeholder and not the value",
+            "Tests configure a deeply nested path and an array-of-objects path and assert masking hits every instance",
+            "Tests assert the raw sensitive value appears nowhere in the emitted log entry string",
+            "A test configures distinct fields for request and response payloads and asserts both are masked respectively"
+          ],
+          "failureExamples": [
+            "A nested or array-sensitive value passes through unmasked while its top-level sibling is masked",
+            "The request payload is masked but the response payload carrying the same field leaks",
+            "Masking leaks reconstructable secret shape (e.g., placeholder preserving exact value length)"
+          ],
+          "minScore": 9
+        },
+        {
+          "id": "error-path-parity",
+          "label": "Error emission path applies identical redaction",
+          "ruleStatement": "The error emission path applies the same redaction as the success path: a failing call's log entry is as clean as a successful one's, and redaction never swallows the error record itself.",
+          "passCriteria": [
+            "Tests force an error-path emission (non-2xx provider response, network-level failure) and assert the entry contains no raw sensitive value",
+            "A test or code inspection shows both paths resolve through the same redaction helper/call site",
+            "A test asserts error entries remain non-empty and still describe the failure after redaction"
+          ],
+          "failureExamples": [
+            "Error-path entries carry the raw request/response body while success entries are masked",
+            "The error path logs the raw payload as exception detail, bypassing redaction",
+            "Error-path entries disappear entirely because redaction throws while composing the error record"
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "masking-idempotent",
+          "label": "Masking is idempotent, lossless, and mutation-free",
+          "ruleStatement": "Redaction is repeatable and side-effect free: applying it twice yields identical output, non-sensitive content is preserved byte-for-byte, the emitted payload stays valid structured data, and the caller's in-flight request/response object is never mutated.",
+          "passCriteria": [
+            "A test asserts redact(redact(payload)) is deep-equal to redact(payload)",
+            "A test asserts fields matching no redaction rule are byte-identical after masking",
+            "A test asserts the masked payload still parses as valid JSON with its structure retained",
+            "A test deep-freezes the input payload before redaction and asserts no mutation occurred"
+          ],
+          "failureExamples": [
+            "Running redaction twice re-renders or scrambles already-masked values",
+            "Masking mutates the in-flight request object, corrupting what the provider actually sends",
+            "Redaction rewrites non-sensitive content (whitespace, field order, structure) so the emitted payload is unusable"
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "redact-never-throws",
+          "label": "Redaction is fail-closed but never fails the intercepted call",
+          "ruleStatement": "Redaction tolerates malformed or hostile inputs — null, non-object bodies, unparseable/non-JSON payloads, circular references, pathological key collisions — never throwing out of the interceptor and never falling back to logging raw bytes; at worst the payload is omitted from the entry.",
+          "passCriteria": [
+            "Tests feed null, empty string, non-JSON binary, deeply nested, and circular payloads through the redaction entry point and assert no exception escapes",
+            "A test asserts unparseable payloads yield an entry that omits the payload rather than including it raw",
+            "Tests run redaction over pathological payload shapes (massive duplication, deep nesting) and assert bounded completion with no hang or stack overflow"
+          ],
+          "failureExamples": [
+            "A circular reference throws and the exception propagates, breaking the LLM call the interceptor is meant to be invisible to",
+            "Unparseable payloads are logged raw 'as a fallback', leaking secrets precisely when the data is malformed",
+            "Pathological payloads cause the interceptor to hang or exhaust the stack"
+          ],
+          "minScore": 8
+        }
+      ],
+      "healerHint": "The most likely failure is that the error emission path bypasses redaction, or redact() itself throws on weird payloads, leaking raw PII exactly when the provider call fails — fix it by routing every emission call site (success and error) through one shared redact() entry point and adding a single test that walks every call site asserting no raw sensitive value appears under the default config."
+    },
+    {
+      "id": "pluggable-logger",
+      "order": 4,
+      "name": "Pluggable logger: Logger interface with default console log-entry adapter",
+      "goal": "Define the pluggable logger: the Logger interface, the LlmLogEntry shape, and the default console adapter, replacing the interceptor's inline console.log emission so consumers can supply their own logger (the seam a later OTEL span exporter plugs into), consuming the parser's parse result and the redaction-masked payload.",
+      "boundedContext": "log entry emission",
+      "layer": "application",
+      "blastRadius": "small",
+      "inputs": [
+        "interceptor-core deliverable (emission call site + entry assembly)",
+        "existing LlmLogEntry shape from llm-http-logging.module.ts",
+        "provider-parser and payload-redaction deliverables (parse-result and masked-payload fields composing the entry)"
+      ],
+      "expectedResult": "src/logger.ts — the pluggable logger module: Logger interface, LlmLogEntry type, and default console-logger adapter, wired as the interceptor's emission endpoint replacing the inline console.log",
+      "dependsOn": [
+        "interceptor-core",
+        "provider-parser",
+        "payload-redaction"
+      ],
+      "compensation": "Routing emission back to the interceptor's inline console default by removing the Logger indirection — the LlmLogEntry shape is unchanged.",
+      "rubric": [
+        {
+          "id": "logger-interface-seam",
+          "label": "Logger interface is a typed, framework-free seam",
+          "ruleStatement": "The deliverable exports a Logger interface that consumers can implement without importing NestJS or any framework runtime, and the interceptor's emission call site depends only on that interface — never on console directly — because this seam is what the later OTEL span exporter plugs into.",
+          "passCriteria": [
+            "src/logger.ts exports a Logger type whose sole parameter is LlmLogEntry and whose return is void, and exports the default console adapter under a stable name.",
+            "src/logger.ts imports nothing from '@nestjs/common' or any other framework/runtime library — only TypeScript types and built-ins.",
+            "The interceptor service imports and stores Logger (e.g. 'private readonly logger: Logger') instead of constructing the console lambda inline.",
+            "A grep over the interceptor-core emission call site finds zero remaining direct console.log/console.error emission for LLM call entries."
+          ],
+          "failureExamples": [
+            "The interceptor still calls console.log(JSON.stringify(entry)) at the emission site and the 'seam' is only a type alias nobody is wired to.",
+            "The Logger interface lives inside a NestJS module and importing it pulls @nestjs/common into a consumer's bundle.",
+            "The logger module exports a class with a LoggerImpl that can't be implemented outside Nest's DI container."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "entry-carries-masked-payload",
+          "label": "LlmLogEntry composes parse result and redaction-masked payload",
+          "ruleStatement": "The LlmLogEntry type consumed by the Logger includes the provider-parser parse-result fields and the payload-redaction masked request/response payload; the entry must NOT carry raw request/response body fields, because any field on the entry is what gets emitted to logs and spans unchanged.",
+          "passCriteria": [
+            "LlmLogEntry retains/extends parse-result fields (model, inputTokens, outputTokens, url/callerTrace) supplied by the provider-parser deliverable.",
+            "LlmLogEntry has explicit masked-payload fields (e.g. maskedRequestBody/maskedResponseBody) typed as the payload-redaction deliverable's redacted output.",
+            "A grep of the LlmLogEntry type finds no field whose type is a raw string/Buffer body captured from the wire.",
+            "The emission call site assembles the entry from the parser's parse result and the redaction output — no re-parsing or re-slicing of raw bodies at emission time."
+          ],
+          "failureExamples": [
+            "The entry is still the pre-phase five-field shape (timestamp/model/tokens/callerTrace/url) with no masked payload, so consumers and the span exporter can never see what was sent/received.",
+            "LlmLogEntry adds a 'requestBody: string' field holding the unmasked wire body.",
+            "The entry re-runs JSON.parse on raw bodies at emission time instead of consuming the redaction deliverable's output."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "console-adapter-no-secret-leak",
+          "label": "Default console adapter never emits unmasked secrets",
+          "ruleStatement": "The default console-logger adapter emits exactly the fields of LlmLogEntry — which are redacted — and nothing else; it must not stringify raw payloads, headers, or authorization material, so API keys and PII can never appear in an emitted log line.",
+          "passCriteria": [
+            "The adapter's output is derived solely from the entry object (JSON.stringify(entry) or explicit field mapping) and holds no reference to the underlying req/res or headers.",
+            "Emitting an entry whose request carried an Authorization header produces output containing no trace of the header value.",
+            "Emitting an entry whose payload contained PII (email/SSN/financial data) produces output containing only the masked rendering."
+          ],
+          "failureExamples": [
+            "The adapter or the interceptor logs the raw request/response body containing PII before redaction is applied.",
+            "A provider API key or Authorization header appears in console output for a call that went through the default adapter.",
+            "The adapter reads headers directly from the intercepted request rather than from the entry."
+          ],
+          "minScore": 9
+        },
+        {
+          "id": "emission-error-containment",
+          "label": "Logging failure never breaks the intercepted call and emission is deterministic",
+          "ruleStatement": "The emission path is isolated from the transport path: a throwing logger or a malformed entry must not propagate an error to the caller of the intercepted HTTP request, and the console adapter must be deterministic and state-free so repeatable emission (idempotency) yields identical output and repeated module installs don't accumulate side effects.",
+          "passCriteria": [
+            "Injecting a logger that throws does not cause the intercepted request/response flow to error — the throw is caught or isolated at the emission call site.",
+            "A test invoking the console adapter twice with the same entry produces byte-identical output.",
+            "src/logger.ts holds no module-level mutable state that changes between calls or across installs."
+          ],
+          "failureExamples": [
+            "A throwing consumer logger crashes the bearing LLM call (unhandled rejection/exception propagates through the http patched path).",
+            "Console adapter output varies per invocation due to shared counters, random ids, or module-level buffers.",
+            "Two registrations of the module accumulate duplicated listeners or state, doubling emitted entries."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "rollback-and-consumer-compat",
+          "label": "Rollback-safe: existing logger-option consumers still compile",
+          "ruleStatement": "The new Logger seam preserves the phase's declared compensation and backward compatibility: the previously shipped 'logger: (entry: LlmLogEntry) => void' option signature still typechecks against the new Logger type, the pre-existing LlmLogEntry fields (timestamp, model, inputTokens, outputTokens, callerTrace, url) are retained in the new shape, and routing emission back to the inline console (the documented compensation) is a local removal of the indirection that changes nothing in LlmLogEntry or the entry's assembly.",
+          "passCriteria": [
+            "Existing consumers passing 'logger: (entry) => {...}' against the current LlmLogEntry compile unchanged against the new Logger type with zero source edits.",
+            "The new LlmLogEntry still contains timestamp, model, inputTokens, outputTokens, callerTrace, and url alongside the added fields.",
+            "Removing the Logger indirection (stubbing the adapter to inline console output) leaves the LlmLogEntry type and its assembly untouched — verified by the compensation being a local diff inside the emission call site."
+          ],
+          "failureExamples": [
+            "The new Logger type requires arguments or methods the old callback shape lacked, breaking current consumers and the published option surface.",
+            "LlmLogEntry was renamed or stripped of prior fields, contradicting the documented compensation 'the LlmLogEntry shape is unchanged'.",
+            "Rolling back the indirection forces changes to provider-parser or payload-redaction types."
+          ],
+          "minScore": 7
+        }
+      ],
+      "healerHint": "Most likely failure: the interceptor's inline console.log survives and LlmLogEntry wasn't extended with the redacted payload fields (the phase degenerates into a type-only refactor) — delete the inline console emission, wire the Logger into the call site, and add maskedBody/maskedResponse fields to the entry so the redaction seam actually reaches emitted output."
+    }
+  ],
+  "successCriteria": [
+    "A standalone package directory with its own package.json that builds to a publishable dist (no hard NestJS/reflect-metadata runtime dependency) whose singleton-safe http/https patch reproduces today's capability (model extraction, token estimation, url, caller trace per log entry) with all gates green (`npm run build`, `npm run lint`, `npm test`). HORIZON-0 SCOPE - this criterion certifies only the kept-phase subset (package-scaffold, interceptor-core, provider-parser, payload-redaction, pluggable-logger); it does NOT certify the full objective's remaining success bars of (a) a latency-budget benchmark proving near-zero latency, (b) the enforced-order input/output transformer pipeline, or (c) the OTEL span exporter demo, all of which this horizon defers to the next horizon (see deferred entries, which are marked as full-objective success bars). Meeting this criterion does not mean the full task objective is met.",
+    "package-scaffold: packages/<name>/ directory whose npm run build emits a dual CJS/ESM dist with .d.ts declarations and whose npm run lint and npm test pass on the empty package, with a lockfile generated",
+    "interceptor-core: src/interceptor.ts — the Nest-free Interceptor class with a singleton guard and restore() hook, off-request-path payload capture, fixed url derivation, caller-trace extraction, error-path emission, and an options seam whose default emission produces log entries free of raw payloads — exported as the package entry",
+    "provider-parser: src/provider-parser.ts — the ProviderParser interface plus the default per-provider parser registry (openai/anthropic/cohere/mistral) with the chars/4 heuristic and usage-field extraction, wired as the interceptor's parse step",
+    "payload-redaction: src/redaction.ts — the redaction module (RedactionConfig + masking functions) wired into every emission path so the default config logs no raw bodies and configured sensitive fields are masked",
+    "pluggable-logger: src/logger.ts — the pluggable logger module: Logger interface, LlmLogEntry type, and default console-logger adapter, wired as the interceptor's emission endpoint replacing the inline console.log"
+  ],
+  "deferred": [
+    "otel-span-exporter — OTEL span exporter activated only when optional @opentelemetry/* peer deps are present — FULL-OBJECTIVE SUCCESS BAR ('an OTEL span exporter demo that activates only when optional @opentelemetry/* peer deps are installed') deferred to the NEXT horizon: it remains a named success bar of the full objective and horizon-0's successCriteria explicitly do NOT claim it. Deferral reason: fails YAGNI gate 2 (needs the log-entry/emission contract stabilized in pluggable-logger; peer-dep packaging is its own concern and no span consumer exists yet).",
+    "transformer-pipeline — request/response transformers in enforced order with Content-Length accounting — FULL-OBJECTIVE SUCCESS BAR ('input/output transformers run in the enforced order — request transformed before send, response transformed before return to caller — with tests proving both ordering and that mutated bodies reach the wire/caller intact') deferred to the NEXT horizon: it remains a named success bar of the full objective and horizon-0's successCriteria explicitly do NOT claim it. Deferral reason: fails YAGNI gate 2 (needs redaction stable first so rewriting runs inside the protected pipeline; mutating bodies introduces the stale Content-Length risk discovery flagged).",
+    "latency-benchmark — fixture-based latency-overhead benchmark vs. an explicit budget — FULL-OBJECTIVE SUCCESS BAR ('a benchmark proves buffered (non-streaming) interception overhead stays within an explicit budget (e.g. <1ms p50 / <2% p99 added latency) and no work beyond body capture happens on the request path') deferred to the NEXT horizon: it remains a named success bar of the full objective and horizon-0's successCriteria explicitly do NOT certify near-zero latency as proven. Deferral reason: fails YAGNI gate 2 (budget sign-off is a required material; this horizon already preserves the off-request-path ordering structurally, the benchmark proves the numbers next horizon).",
+    "nest-adapter-and-migration — thin optional Nest wrapper (DynamicModule regenerating LlmHttpLoggingModule.register) + app.module.ts migrated to consume the package — deferred: fails YAGNI gate 2 (proof-by-consumption needs the package's public API final; the only consumer is the untouched stock Nest app).",
+    "publish-verification — npm pack + publish --dry-run, clean non-Nest consumer sandbox, Node 18/20/22 build/test matrix — deferred: fails YAGNI gate 2 (needs the package content finalized; consumes the multi-node-runtime, registry-auth, and consumer-sandbox materials).",
+    "extension-seams — streaming/SSE, TLS, retries, WebSockets, auth-token injection, proxy seams — deferred: fails YAGNI gate 3 (speculative interfaces with no second implementation on the horizon; the analysis assumption covers them as extension points, not shipped features).",
+    "package-documentation — README with quickstart and redaction/logger config reference — deferred: fails YAGNI gate 2 (needs the public API and wiring stable)."
+  ]
+}
