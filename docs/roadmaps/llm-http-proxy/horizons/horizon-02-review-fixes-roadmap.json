@@ -1,0 +1,718 @@
+{
+  "task": "Horizon 2 of the llm-http-proxy project (horizon 1 shipped the standalone package: scaffold, interceptor-core, provider-parser, payload-redaction, pluggable-logger). This horizon fixes the seven correctness code-review findings on the package (#1 derived-URL scheme, #2 token redaction, #3 emission-path crash guard, #4 reflectCall encoding, #5 redaction-walk DAG, #6 double-emit, #7 multibyte chunk buffering), each with a failing-before/passing-after regression test in the existing Jest *.test.ts files, keeping pnpm lint / typecheck / test / build green at package and repo-root level with no public API change. The caller wants all ten findings fixed eventually; the performance finding (#8 negative capture-decision cache) and the two YAGNI cleanups (#9 collapse the fake per-provider parser registry; #10 remove dead scaffolding from src/app.module.ts) are explicitly deferred to a later Planning Horizon because #9 is a breaking public-API change and #8/#10 are independent of the correctness pass. vision.md remains authoritative for the long-term objective; this horizon does not touch the still-deferred vision success bars (latency-budget benchmark, enforced-order transformer pipeline, OTEL span exporter, package identity/publish, Nest adapter).",
+  "analysis": {
+    "objective": "Fix the seven correctness code-review findings (#1-#7) in the llm-http-proxy package, each shipped with a failing-before/passing-after regression test, keeping lint, typecheck, test, and build green; findings #8, #9 and #10 are deferred to a later Planning Horizon.",
+    "successDefinition": "Findings #1-#7 are resolved in production code under packages/llm-http-proxy/src; each fix has at least one regression test added to the existing *.test.ts files that demonstrably fails against the pre-fix implementation and passes after; the existing horizon-1 test suite stays green; and pnpm lint, typecheck, pnpm test, and pnpm build are all green at both package and repo-root level, with no new runtime dependencies and no public API change. Findings #8, #9, #10 (performance + the two YAGNI cleanups) are explicitly deferred to a later horizon and are NOT certified by this horizon's successCriteria.",
+    "assumptions": [
+      "All 10 findings live within packages/llm-http-proxy/src plus the repo-root src/app.module.ts; no other files or packages are in scope.",
+      "The baseline (pre-change) lint, typecheck, test, and build are currently green, so 'stay green' is a regression bar not a repair task.",
+      "The line numbers in the findings are inflated/fictitious so findings must be mapped to the real symbols (deriveUrl, isSensitiveKey/DEFAULT_SENSITIVE_FIELDS, emitLogEntry, reflectCall, walk, completeCapture, appendChunk, the ClientRequest.prototype.write patch, resolveParser/PARSERS_BY_HOST).",
+      "'pnpm lint/typecheck/pnpm test/pnpm build' resolve through the monorepo to the package's own eslint/tsc/jest scripts and the Nest app's nest build/jest; Jest (not Vitest) is the test runner and stays so.",
+      "Regression tests are added to the four existing *.test.ts files; a new test file is created only if a finding has no corresponding existing file.",
+      "The public API may change where finding #9 requires it: resolveParser/parseCall/registry exports in index.ts may be replaced by a single default-parser accessor, and src/app.module.ts is updated to match.",
+      "Finding #9 (parser-registry collapse) and #10 (app.module.ts scaffolding) are deferred to a later Planning Horizon, so this horizon makes NO public API change to packages/llm-http-proxy/src/index.ts and does not touch src/app.module.ts.",
+      "capturePayloads, logger, tokenCounter, providerParser, and redaction option semantics remain fully backward compatible \u2014 no behavior change beyond the seven correctness fixes."
+    ],
+    "risks": [
+      "Fixes #2-#7 touch shared machinery (redaction.ts walk, the monkey-patched ClientRequest path); a regression here can silently corrupt captured payloads or alter non-matching-request behavior, so each fix needs its revert-to-fail regression test to genuinely exercise the defect.",
+      "Narrowing the 'token' redaction rule (#2) could regress genuinely sensitive keys such as access_token/refresh_token/api_token; the fix must still redact those while exempting completion_tokens/prompt_tokens/total_tokens/max_tokens accounting fields.",
+      "Findings #3 (unguarded async callbacks crashing the process) and #6 (double emission across end+error handlers) are timing/async-ordering behaviors that are hard to assert deterministically in Jest without flakiness.",
+      "Fixes #4, #6, #7, and #8 all touch the hot monkey-patched ClientRequest path; regressions here can silently alter latency or the behavior of non-matching requests.",
+      "The negative-decision symbol cache (#8) can go stale if request identity or provider config can change after the first write; caching the wrong decision would drop capture of a matching request.",
+      "If the baseline suite/build is not actually green, the 'stay green' bar becomes an unscoped repair task."
+    ],
+    "outOfScope": [
+      "Adding real per-provider parsing divergence \u2014 Finding #9 explicitly collapses to one default parser; re-introducing per-provider logic contradicts the fix.",
+      "The transformer pipeline and OTEL span exporter on the logger seam \u2014 index.ts marks these as later horizons; no finding touches them.",
+      "Streaming / SSE response body parsing beyond the multi-byte boundary fix (#7) \u2014 #7 only asks for correct decoding of chunked bodies, not streaming semantics.",
+      "Redesigning the public InterceptorOptions / Logger / TokenCounter API beyond what #9 forces \u2014 done-ness bar is a bug-fix pass, not an API redesign.",
+      "Latency/throughput benchmarking or a performance harness for finding #8 \u2014 the fix is a correctness-of-caching change; measuring near-zero-latency claims is separate work.",
+      "Migrating the test runner or restructuring test files \u2014 tests go into the existing Jest *.test.ts files; tooling change is not requested.",
+      "Fixing issues elsewhere in the Nest app or other packages \u2014 only app.module.ts's dead scaffolding (#10) is named.",
+      "Version bump, changelog, or publishing the package \u2014 no finding concerns release mechanics.",
+      "Extracting the app.module.ts sample code into a fully-built example/bootstrap module \u2014 #10 only requires removing the dead import-time computation and side effect."
+    ],
+    "domainShape": "technical",
+    "domainShapeReason": "The task is entirely about interception machinery \u2014 monkey-patching ClientRequest, chunk decoding, an async emission path, a redaction tree-walk, and a parser seam \u2014 with no business entities, rules, or workflows a domain expert would recognize.",
+    "ubiquitousLanguage": [
+      {
+        "term": "interceptor",
+        "meaning": "The Interceptor class that monkey-patches ClientRequest.prototype.write/end to observe in-process LLM HTTP(S) traffic."
+      },
+      {
+        "term": "capture decision (shouldCapture)",
+        "meaning": "The per-request test deciding whether a request is intercepted; finding #8 caches its negative result via a symbol tag."
+      },
+      {
+        "term": "emission path (emitLogEntry)",
+        "meaning": "The setImmediate-deferred pipeline that parses, redacts, runs pluggable callbacks, and calls the logger to produce one LlmLogEntry."
+      },
+      {
+        "term": "completeCapture / state.emitted",
+        "meaning": "The finalization step that assembles and emits the log entry once per request; needs a once-only guard."
+      },
+      {
+        "term": "provider parser",
+        "meaning": "The ProviderParser seam; after #9 there is one default parser plus the providerParser option as the sole extension point."
+      },
+      {
+        "term": "redaction walk",
+        "meaning": "The recursive walk() in redaction.ts that masks sensitive keys; must track the current DFS path and use non-substring key matching for token."
+      },
+      {
+        "term": "chunk buffering",
+        "meaning": "Collecting raw request/response Buffers and concatenating before UTF-8 decode so multi-byte characters split across chunk boundaries are not corrupted."
+      },
+      {
+        "term": "derived URL (deriveUrl)",
+        "meaning": "Reconstruction of the logged request URL, including the scheme, which must reflect https for TLS provider calls."
+      },
+      {
+        "term": "request reflection (reflectCall)",
+        "meaning": "Forwarding the intercepted write/end call through to the pristine original method without altering the argument list."
+      }
+    ]
+  },
+  "discoveryFindings": [
+    {
+      "area": "line-numbers",
+      "finding": "All cited line numbers are fictitious/inflated. Real file sizes: interceptor.ts 595 lines, redaction.ts 231, provider-parser.ts 239, app.module.ts 109. Findings must be mapped by symbol, not line.",
+      "implication": "Reference symbols (deriveUrl, walk, isSensitiveKey, emitLogEntry, reflectCall, completeCapture, appendChunk, resolveParser/PARSERS_BY_HOST) directly."
+    },
+    {
+      "area": "finding-1-deriveUrl",
+      "finding": "deriveUrl(req, scheme='http') is already scheme-aware; the bug is purely the emitLogEntry call site calling deriveUrl(req) with no second arg. No protocol detection exists. Node ClientRequest exposes .protocol and .agent.",
+      "filePath": "packages/llm-http-proxy/src/interceptor.ts",
+      "implication": "Derive scheme from req.protocol (fallback socket/agent TLS check), pass into deriveUrl at the call site. Keep deriveUrl signature. Existing plain-http 127.0.0.1 http:// test must stay green."
+    },
+    {
+      "area": "finding-2-redaction-token",
+      "finding": "DEFAULT_SENSITIVE_FIELDS contains bare 'token'; isSensitiveKey does lower.includes(needle), so completion_tokens/prompt_tokens/total_tokens/max_tokens all match. The list also has accessToken/access_token/refreshToken/refresh_token explicitly.",
+      "filePath": "packages/llm-http-proxy/src/redaction.ts",
+      "implication": "Drop bare 'token', rely on explicit *Token entries plus add authToken/auth_token/apiToken/api_token/idToken/id_token. PII and X-Password collision tests must stay green."
+    },
+    {
+      "area": "finding-3-emitLogEntry-guard",
+      "finding": "emitLogEntry runs inside setImmediate via completeCapture. Only the final this.logger(entry) call is try/caught. deriveUrl, resolveParser, parseCall (user parser callbacks) and redact() run unguarded \u2014 a throwing providerParser/tokenCounter crashes the process.",
+      "filePath": "packages/llm-http-proxy/src/interceptor.ts",
+      "implication": "Wrap the whole emitLogEntry body in try/catch. Regression test: providerParser whose extractModel throws; fire request; assert no crash."
+    },
+    {
+      "area": "finding-4-reflectCall",
+      "finding": "reflectCall manually rebuilds the arg list: if callback!==undefined it calls original.call(receiver, chunk, callback), dropping encoding when both encoding and callback supplied. Called from writeWrapper and endWrapper.",
+      "filePath": "packages/llm-http-proxy/src/interceptor.ts",
+      "implication": "Replace with original.apply(receiver, args); chunk param then unused. Regression test: spy original write, call req.write(buf,'base64',cb), assert original received 'base64' and cb."
+    },
+    {
+      "area": "finding-5-walk-seen",
+      "finding": "walk() adds every visited object to the seen WeakSet and never deletes it. A non-circular object referenced twice (DAG) has its 2nd occurrence replaced with the placeholder. Only true-cycle tests exist, no DAG test.",
+      "filePath": "packages/llm-http-proxy/src/redaction.ts",
+      "implication": "Track DFS path: seen.add before recursing, seen.delete after \u2014 in both the Array.isArray branch (value.map) and the object branch. True-cycle test must stay green (delete-after-recurse keeps the ancestor in seen while descendants walk)."
+    },
+    {
+      "area": "finding-6-double-emit",
+      "finding": "attachCapture registers req.on('response', res=>res.on('end', ()=>completeCapture)) AND req.on('error', err=>completeCapture(...,err)). completeCapture has no once-guard; the finished/capturedEnd flags on CaptureState are not checked. Response-then-error emits two entries, the 2nd carrying entry.error. attachCapture is PUBLIC.",
+      "filePath": "packages/llm-http-proxy/src/interceptor.ts",
+      "implication": "Add state.emitted boolean set at the top of completeCapture, early-return if set. Regression test via public attachCapture with a fake EventEmitter req (on + getHeader): emit response+end then error, flush setImmediate, assert entries.length===1. Existing install-twice and refused-connection single-emission tests must stay green."
+    },
+    {
+      "area": "finding-7-multibyte-chunks",
+      "finding": "CaptureState.requestBodyChunks/responseBodyChunks are string[]. appendChunk decodes EACH Buffer chunk independently via Buffer.from(chunk).toString('utf8'); emitLogEntry joins. Multibyte char split across a chunk boundary -> U+FFFD. appendChunk also handles string chunks and object chunks (JSON.stringify).",
+      "filePath": "packages/llm-http-proxy/src/interceptor.ts",
+      "implication": "Store chunks as Buffer[]: concat then toString('utf8') once in emitLogEntry; convert string/object chunks to Buffer at append time. node:string_decoder is a builtin (no new dep). Regression test: server writes response body in two res.write() splitting a multibyte char; assert entry.maskedResponseBody round-trips it."
+    },
+    {
+      "area": "finding-8-shouldCapture-hotpath",
+      "finding": "writeWrapper, endWrapper, and onWrapper call shouldCapture on every write()/on('error') of every request whose kCapture symbol is undefined \u2014 i.e. every write of every non-matching request forever. No negative cache.",
+      "filePath": "packages/llm-http-proxy/src/interceptor.ts",
+      "implication": "DEFERRED to a later Planning Horizon. Add a kNoCapture symbol tag set the first time shouldCapture returns false; short-circuit in writeWrapper/endWrapper/onWrapper (onWrapper is an easily-overlooked third call site). Hostname is fixed after construction so the negative cache cannot go stale."
+    },
+    {
+      "area": "finding-9-parser-registry",
+      "finding": "genericChatParser is the single real object; openaiParser/anthropicParser/cohereParser/mistralParser/fallbackParser are all = genericChatParser. PARSERS_BY_HOST + resolveParser always return the same object. parserToTokenCounter is exported from provider-parser.ts, not re-exported by index.ts, used nowhere (dead).",
+      "filePath": "packages/llm-http-proxy/src/provider-parser.ts",
+      "implication": "DEFERRED to a later Planning Horizon. Collapse to one defaultParser, keep resolveParser as a thin back-compat accessor or delete it (breaking), drop dead parserToTokenCounter, keep the providerParser option as the extension point."
+    },
+    {
+      "area": "finding-9-blast-radius",
+      "finding": "index.ts exports resolveParser + parseCall among many symbols. The only external consumer src/app.module.ts imports resolveParser + parseCall from 'llm-http-proxy' (built dist via link:) and calls resolveParser(undefined) inside its real customProviderParser wiring.",
+      "filePath": "packages/llm-http-proxy/src/index.ts",
+      "implication": "DEFERRED to a later Planning Horizon. If resolveParser/parseCall change, app.module.ts must update in lockstep AND the package must be rebuilt before nest build at repo root sees new dist."
+    },
+    {
+      "area": "finding-9-tests",
+      "finding": "provider-parser.test.ts (342 lines) 'distinct parser per host' only asserts toBeDefined + no throw; 'subdomain resolves' asserts SAMENESS (===). No test asserts per-host divergence. Custom-providerParser end-to-end tests exist and validate the surviving extension point.",
+      "filePath": "packages/llm-http-proxy/src/provider-parser.test.ts",
+      "implication": "DEFERRED to a later Planning Horizon. Collapsing is low-risk; every resolveParser(host) call site in the test needs updating; the 'distinct parser'/'subdomain resolves' tests get rewritten/removed."
+    },
+    {
+      "area": "finding-10-app-module",
+      "finding": "app.module.ts has export const llmHttpInterceptor = new Interceptor(...); llmHttpInterceptor.install(); at import time, then sampleParser/sampleParseResult/maskedSample computed at import and discarded via void. The @Module providers legitimately use llmHttpInterceptor; onApplicationShutdown calls restore().",
+      "filePath": "src/app.module.ts",
+      "implication": "DEFERRED to a later Planning Horizon (depends on #9). Delete the sample*/void statements and now-unused imports; move install() into an OnApplicationBootstrap/onModuleInit hook pairing with the existing onApplicationShutdown restore()."
+    },
+    {
+      "area": "build-test-setup",
+      "finding": "packages/llm-http-proxy is NOT a workspace member. It has its own package.json (build=tsc cjs+esm+postbuild, lint=eslint src/**/*.ts, test=jest --passWithNoTests, typecheck=tsc -p tsconfig.json --noEmit), own eslint.config.mjs, 3 tsconfigs, own lockfile, Jest config inlined (ts-jest, testRegex (\\.|/)(test|spec)\\.ts$). Root consumes via link:.",
+      "filePath": "packages/llm-http-proxy/package.json",
+      "implication": "Runner is Jest (ts-jest), stays Jest. Package tests run from inside the package dir. Repo-root pnpm test runs ONLY the Nest app spec. 'Green at both levels' = run package lint/typecheck/test/build in packages/llm-http-proxy AND root nest build + root jest after rebuilding the package dist. Package tsconfig include src/**/*.ts so typecheck+jest see .test.ts (strict:true, noImplicitOverride:true)."
+    },
+    {
+      "area": "test-helpers-available",
+      "finding": "interceptor.test.ts / provider-parser.test.ts / redaction.test.ts each define local helpers: startServer() (real http.createServer on 127.0.0.1:0), post()/withEntries() (installs Interceptor with capturing logger, flushes with await setImmediate, restores). NO fake/mock ClientRequest helper exists. deriveUrl/shouldCapture unit tests cast object literals as unknown as http.ClientRequest.",
+      "filePath": "packages/llm-http-proxy/src/interceptor.test.ts",
+      "implication": "For #3 and #6 regression tests: use PUBLIC interceptor.attachCapture(fakeReq) with a minimal EventEmitter implementing getHeader() \u2014 cleanest deterministic path, no such helper exists yet. For #7 extend startServer to split a multibyte char across two res.write(). For #4 spy http.ClientRequest.prototype.write before install."
+    },
+    {
+      "area": "existing-guard-tests",
+      "finding": "interceptor.test.ts 'install() twice leaves exactly one interception layer' asserts entries.length===1 (success path); 'a refused connection emits exactly one error entry' asserts length===1 (error path). Neither exercises response-then-error on one request (the #6 scenario).",
+      "filePath": "packages/llm-http-proxy/src/interceptor.test.ts",
+      "implication": "The #6 regression test is genuinely new coverage. The state.emitted guard must not regress the two existing single-emission assertions."
+    },
+    {
+      "area": "redaction-idempotency-contract",
+      "finding": "redaction.ts module + DEFAULT_SENSITIVE_FIELDS docstrings promise idempotency (redact(redact(x))==redact(x)) and non-mutation. 'masking is idempotent' test only covers a tree. walk()'s Array branch (value.map) also never removes array entries from seen.",
+      "filePath": "packages/llm-http-proxy/src/redaction.ts",
+      "implication": "#5 fix must handle arrays and objects (delete from seen after each recurse). True cycles must still be broken with the placeholder \u2014 'circular references do not crash' test must stay green."
+    },
+    {
+      "area": "git-state",
+      "finding": "Repo on branch main, latest commits '1'/'v0'/'init', working tree clean.",
+      "implication": "Implementer must branch before committing."
+    },
+    {
+      "area": "interceptor-onWrapper-detail",
+      "finding": "A third wrapper onWrapper patches ClientRequest.prototype.on: when an 'error' listener is added and no capture exists yet, it runs shouldCapture and attachCapture. Its pristine original is stored under tag(onWrapper)[kEndWrapper].",
+      "filePath": "packages/llm-http-proxy/src/interceptor.ts",
+      "implication": "Relevant to the DEFERRED #8: the negative-decision cache should also short-circuit inside onWrapper. Not in scope for this horizon."
+    }
+  ],
+  "requiredMaterials": [],
+  "phases": [
+    {
+      "id": "fix-redaction-walk-key-matching-and-dag-traversal",
+      "order": 0,
+      "name": "Fix redaction walk token key-matching and DAG traversal",
+      "goal": "Stop the redaction walk from destroying token-accounting fields and from replacing legitimately-shared (DAG) subtrees with the placeholder, while keeping true-cycle breaking and idempotency intact.",
+      "boundedContext": "redaction walk",
+      "layer": "infrastructure",
+      "blastRadius": "small",
+      "inputs": [
+        "packages/llm-http-proxy/src/redaction.ts (DEFAULT_SENSITIVE_FIELDS, isSensitiveKey, walk)",
+        "packages/llm-http-proxy/src/redaction.test.ts",
+        "stage1.5 discovery findings finding-2-redaction-token and finding-5-walk-seen",
+        "docs task.md findings #2 and #5"
+      ],
+      "expectedResult": "redaction.ts updated so DEFAULT_SENSITIVE_FIELDS drops bare 'token' in favour of explicit *Token/*_token entries (access/refresh/auth/api/id) and walk() adds to the seen WeakSet before recursing and deletes after, in both the array and object branches; redaction.test.ts gains a DAG regression test (const shared={x:1}; redact({a:shared,b:shared}) leaves b deep-equal to a with no placeholder) and a token-accounting regression test (completion_tokens/prompt_tokens/total_tokens/max_tokens survive, access_token still redacted), each failing before and passing after, with the existing circular-reference, idempotency, PII and X-Password tests still green.",
+      "dependsOn": [],
+      "rubric": [
+        {
+          "id": "token-accounting-fields-survive-redaction",
+          "label": "Token-accounting fields survive the redaction walk",
+          "ruleStatement": "After the redaction walk runs, numeric token-accounting fields (prompt_tokens, completion_tokens, total_tokens, input_tokens, output_tokens, cache_read_input_tokens, max_tokens) retain their original values and are NOT replaced with the redaction placeholder.",
+          "passCriteria": [
+            "DEFAULT_SENSITIVE_FIELDS no longer contains the bare entry 'token'; matching is done via explicit patterns such as access_token / refresh_token / *_token or an equivalent suffix/exact-match rule",
+            "A regression test in redaction.test.ts feeds an object containing both a usage block with token-count fields and a real secret token field, asserts the counts are unchanged and the secret is redacted",
+            "Key-matching does not substring-match 'token' inside 'prompt_tokens'/'total_tokens'"
+          ],
+          "failureExamples": [
+            "walk() still redacts obj.usage.total_tokens because key.includes('token')",
+            "'token' remains in DEFAULT_SENSITIVE_FIELDS and only the test's expected value was loosened",
+            "New patterns also swallow 'tokenizer' or 'tokens_used' style keys"
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "sensitive-token-keys-still-redacted",
+          "label": "Genuinely sensitive token/secret keys still redacted",
+          "ruleStatement": "Keys that carry real credentials (access_token, refresh_token, apiKey/api_key, authToken, bearerToken, client_secret, password) are still replaced with the placeholder after the change.",
+          "passCriteria": [
+            "A test asserts each of access_token, refresh_token, and an *_token / *Token credential key is redacted at arbitrary nesting depth",
+            "Existing X-Password / PII / header-redaction tests remain unmodified and green",
+            "apiKey and password style keys unaffected by the token-matching refactor"
+          ],
+          "failureExamples": [
+            "Dropping bare 'token' also stopped redacting a plain key literally named 'token' holding a bearer credential, with no replacement pattern covering it",
+            "access_token leaks because the new suffix rule only matches camelCase",
+            "Test only checks top-level keys, not nested ones"
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "dag-shared-subtree-preserved",
+          "label": "Legitimately shared (DAG) subtrees are not clobbered",
+          "ruleStatement": "When the same object/array instance is referenced from two or more sibling paths (a diamond / DAG, not a cycle), every reference is fully redacted-in-place and none is replaced by the cycle placeholder.",
+          "passCriteria": [
+            "A regression test builds an object where one child instance is assigned to two keys (or two array slots), passes it through redaction, and asserts BOTH resulting locations contain the fully-walked structure (not placeholder)",
+            "walk() adds the node to the seen WeakSet before recursing and removes it after returning, in BOTH the array branch and the object branch",
+            "The DAG test fails against the pre-change implementation and passes after"
+          ],
+          "failureExamples": [
+            "Second reference to a shared node renders as the cycle placeholder because the node was never deleted from the seen set",
+            "WeakSet.delete added only in the object branch, so shared arrays still get placeholdered",
+            "Fix special-cases the test's shape instead of using add-before / delete-after"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "true-cycles-still-broken-and-idempotent",
+          "label": "True cycles still broken; walk is idempotent and non-mutating",
+          "ruleStatement": "A real reference cycle still terminates with the placeholder (no infinite recursion), redacting an already-redacted output is a no-op, and the input object is not mutated.",
+          "passCriteria": [
+            "Existing circular-reference test and idempotency test remain present and pass unchanged",
+            "A test asserts the original input object is deeply unchanged after redaction",
+            "Running walk() on its own output yields a deep-equal result",
+            "Self-referential and mutually-referential fixtures complete without throwing"
+          ],
+          "failureExamples": [
+            "add-before/delete-after change reintroduces infinite recursion on a direct self-cycle",
+            "redaction mutates caller's object in place",
+            "Second redaction pass changes the placeholder or re-wraps already-redacted values"
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "regression-tests-fail-before-pass-after",
+          "label": "Each fix ships a fail-before / pass-after regression test",
+          "ruleStatement": "The DAG test and the token-accounting test each demonstrably fail when run against the pre-change redaction.ts and pass against the post-change version, and live in the existing redaction.test.ts.",
+          "passCriteria": [
+            "Reverting only redaction.ts production changes (keeping the new tests) makes exactly the two new tests fail with assertion errors tied to the described defect",
+            "The new tests assert on observable output values, not implementation details or spy call counts",
+            "Test names clearly identify them as the DAG and token-accounting regressions"
+          ],
+          "failureExamples": [
+            "New test passes even with the old bare-'token' list because its assertions are too weak",
+            "Test added to a new file rather than redaction.test.ts, or is skipped/only",
+            "Fail-before could not be demonstrated"
+          ],
+          "minScore": 9
+        },
+        {
+          "id": "gates-green",
+          "label": "lint / typecheck / test / build stay green",
+          "ruleStatement": "pnpm lint, pnpm typecheck (tsc), pnpm test, and pnpm build all succeed on the delivered branch with no new warnings suppressed via inline disables.",
+          "passCriteria": [
+            "All four commands exit 0 in the llm-http-proxy package",
+            "No new eslint-disable / @ts-ignore / @ts-expect-error introduced in redaction.ts or redaction.test.ts",
+            "DEFAULT_SENSITIVE_FIELDS remains correctly typed after edits",
+            "After the package gates pass, the package dist is rebuilt and repo-root `nest build` plus root `jest` both pass (the 'green at both levels' bar from discovery build-test-setup)."
+          ],
+          "failureExamples": [
+            "tsc fails because the sensitive-fields array type narrowed and a consumer breaks",
+            "New test relies on a devDependency not added to package.json",
+            "Lint passes only because a rule was disabled for the file"
+          ],
+          "minScore": 9
+        }
+      ],
+      "healerHint": "Most likely failure: the replacement key-matching over-corrects \u2014 either a plain key named exactly 'token' holding a real credential stops being redacted, or the new *Token/*_token suffix rule substring-matches and still nukes prompt_tokens/total_tokens; fix by using exact-match plus explicit access_token/refresh_token entries and a suffix rule anchored so accounting-plural keys are excluded."
+    },
+    {
+      "id": "fix-derived-url-scheme",
+      "order": 1,
+      "name": "Derive the URL scheme so HTTPS provider calls log an https:// URL",
+      "goal": "Log intercepted TLS (HTTPS) provider calls with an https:// derived URL instead of the hard-coded http:// default.",
+      "boundedContext": "derived URL",
+      "layer": "infrastructure",
+      "blastRadius": "small",
+      "inputs": [
+        "packages/llm-http-proxy/src/interceptor.ts (deriveUrl call site inside emitLogEntry)",
+        "packages/llm-http-proxy/src/interceptor.test.ts",
+        "stage1.5 discovery finding finding-1-deriveUrl (and horizon-1 interceptor-core grade note: emitLogEntry always calls deriveUrl(req) with no scheme)",
+        "docs task.md finding #1"
+      ],
+      "expectedResult": "interceptor.ts derives the scheme at the emitLogEntry call site from req.protocol (fallback to a socket/agent TLS check) and passes 'https' or 'http' into deriveUrl WITHOUT changing deriveUrl's signature; interceptor.test.ts gains one regression test asserting an intercepted TLS request is logged with an https:// URL, failing before and passing after, with the existing plain-http 127.0.0.1 http:// test unmodified and green.",
+      "dependsOn": [],
+      "rubric": [
+        {
+          "id": "https-scheme-derivation",
+          "label": "Scheme derived from protocol/TLS and passed to deriveUrl",
+          "ruleStatement": "At the emitLogEntry call site, interceptor.ts must derive the scheme from req.protocol with a fallback to a socket/agent TLS check, passing 'https' for TLS requests and 'http' otherwise into deriveUrl.",
+          "passCriteria": [
+            "Scheme resolution reads req.protocol first, then falls back to a TLS signal (req.socket instanceof tls.TLSSocket, req.agent?.protocol === 'https:', or encrypted flag)",
+            "The resolved scheme string is passed as an argument into deriveUrl at the emitLogEntry site",
+            "deriveUrl's parameter list / type signature is unchanged",
+            "Plain-http requests still resolve to 'http'",
+            "An intercepted TLS request produces a logged URL beginning https://"
+          ],
+          "failureExamples": [
+            "Hardcoding 'https' unconditionally at the call site",
+            "Adding a new parameter to deriveUrl or altering its type",
+            "Detecting https by string-matching the port number only",
+            "Mutating req to add a protocol property"
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "https-url-regression-and-http-still-green",
+          "label": "New https:// URL assertion added; existing 127.0.0.1 http:// test stays green",
+          "ruleStatement": "interceptor.test.ts must gain a test asserting an intercepted TLS request is logged with an https:// URL, failing before the fix and passing after, while the existing plain-http 127.0.0.1 http:// test remains unmodified and passing.",
+          "passCriteria": [
+            "New test sets up an intercepted request over TLS (real or simulated TLSSocket/https.request) and asserts the emitted log entry URL starts with https:// and has the correct host/path",
+            "The existing plain-http test asserting an http://127.0.0.1 URL is present, unchanged, and still passes",
+            "New test demonstrably fails against pre-fix code and passes after",
+            "No test is loosened to make the suite pass"
+          ],
+          "failureExamples": [
+            "Editing the 127.0.0.1 test's expected URL or deleting it",
+            "New https assertion only checks url.includes('example.com'), not the scheme",
+            "Marking the old test .skip",
+            "https test passes even with the fix reverted"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "gates-green",
+          "label": "lint, typecheck, test, build all pass",
+          "ruleStatement": "After the changes, pnpm lint, pnpm typecheck (tsc --noEmit), pnpm test, and pnpm build must all exit 0 for the llm-http-proxy package.",
+          "passCriteria": [
+            "pnpm lint reports no errors on the changed files (no new disables)",
+            "pnpm typecheck passes with no new any, @ts-ignore, or as unknown casts in interceptor.ts",
+            "pnpm test runs the full existing suite plus the new regression tests, all green",
+            "pnpm build completes",
+            "New tests live in existing *.test.ts files",
+            "After the package gates pass, the package dist is rebuilt and repo-root `nest build` plus root `jest` both pass (the 'green at both levels' bar from discovery build-test-setup)."
+          ],
+          "failureExamples": [
+            "Adding // eslint-disable-next-line over the new apply call",
+            "Casting args as [any, any, any] to satisfy tsc",
+            "Regression tests in a new standalone file the runner does not pick up",
+            "build breaks because the deriveUrl call site now passes an argument its type does not accept"
+          ],
+          "minScore": 9
+        }
+      ],
+      "healerHint": "Most likely failure: the call site hard-codes 'https' or misclassifies plain http; fix by reading req.protocol first, then falling back to req.socket instanceof tls.TLSSocket / req.agent?.protocol==='https:', and leave the existing http:// 127.0.0.1 assertion untouched."
+    },
+    {
+      "id": "fix-request-reflection-call-forwarding",
+      "order": 2,
+      "name": "Forward intercepted write/end to the pristine original without dropping the encoding argument",
+      "goal": "Replace reflectCall's hand-rolled argument dispatch with a faithful forward to the pristine original so req.write(chunk, encoding, cb) is not corrupted.",
+      "boundedContext": "request reflection",
+      "layer": "infrastructure",
+      "blastRadius": "small",
+      "inputs": [
+        "packages/llm-http-proxy/src/interceptor.ts (reflectCall, writeWrapper, endWrapper)",
+        "packages/llm-http-proxy/src/interceptor.test.ts",
+        "stage1.5 discovery finding finding-4-reflectCall (and binding discovery: forward via unbound original with the real ClientRequest as receiver)",
+        "docs task.md finding #4"
+      ],
+      "expectedResult": "interceptor.ts replaces reflectCall's callback!==undefined branch with a faithful forward (original.apply(receiver, args), or original.call spreading the full argument list) in writeWrapper/endWrapper so chunk, encoding and callback all reach the pristine original unchanged and the return value is propagated; interceptor.test.ts gains one regression test spying the pristine ClientRequest.prototype.write that asserts req.write(buf,'base64',cb) reaches the original with 'base64' and the same callback reference, failing before and passing after, existing write/end tests green.",
+      "dependsOn": [],
+      "rubric": [
+        {
+          "id": "pristine-original-forwarding",
+          "label": "reflectCall replaced by direct original.apply forwarding",
+          "ruleStatement": "writeWrapper and endWrapper must invoke the pristine original method via original.apply(receiver, args) so every positional argument (chunk, encoding, callback) reaches the original unchanged.",
+          "passCriteria": [
+            "writeWrapper and endWrapper bodies call the captured pristine original with .apply(this|receiver, args), passing the wrapper's arguments verbatim",
+            "No reflectCall helper remains in the forwarding path for write/end",
+            "The encoding argument position is not dropped, reordered, coerced, or defaulted before the original is called",
+            "The return value of the original call is propagated back"
+          ],
+          "failureExamples": [
+            "original.call(this, args[0], args[2]) skipping the encoding at index 1",
+            "reflectCall reconstructing an argument list that omits encoding",
+            "Wrapper calls original(chunk) only when typeof args[1] === 'function'",
+            "Forwarding through a normalizer that converts 'base64' chunk to a Buffer before calling original"
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "encoding-arg-regression-test",
+          "label": "Regression test asserts write(buf,'base64',cb) reaches pristine prototype",
+          "ruleStatement": "interceptor.test.ts must contain a test that spies the pristine ClientRequest.prototype.write and asserts the spy is called with the base64 encoding string and the callback after req.write(buf,'base64',cb).",
+          "passCriteria": [
+            "A test spies http.ClientRequest.prototype.write (the pristine original captured before interception) and triggers an intercepted req.write(buf, 'base64', cb)",
+            "Assertion checks the spy received 'base64' as the second argument AND the same callback reference as the third",
+            "The test fails against the pre-fix reflectCall implementation and passes after",
+            "Test also exercises at least one other arg shape (e.g. write(str) or end(cb))"
+          ],
+          "failureExamples": [
+            "Test only asserts write was called once, not with which arguments",
+            "Spy placed on the wrapper itself rather than the pristine original",
+            "Test asserts encoding via expect.anything()",
+            "No new test added"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "gates-green",
+          "label": "lint, typecheck, test, build all pass",
+          "ruleStatement": "After the changes, pnpm lint, pnpm typecheck (tsc --noEmit), pnpm test, and pnpm build must all exit 0 for the llm-http-proxy package.",
+          "passCriteria": [
+            "pnpm lint reports no errors on the changed files (no new disables)",
+            "pnpm typecheck passes with no new any, @ts-ignore, or as unknown casts in interceptor.ts",
+            "pnpm test runs the full existing suite plus the new regression tests, all green",
+            "pnpm build completes",
+            "New tests live in existing *.test.ts files",
+            "After the package gates pass, the package dist is rebuilt and repo-root `nest build` plus root `jest` both pass (the 'green at both levels' bar from discovery build-test-setup)."
+          ],
+          "failureExamples": [
+            "Adding // eslint-disable-next-line over the new apply call",
+            "Casting args as [any, any, any] to satisfy tsc",
+            "Regression tests in a new standalone file the runner does not pick up",
+            "build breaks because the deriveUrl call site now passes an argument its type does not accept"
+          ],
+          "minScore": 9
+        }
+      ],
+      "healerHint": "Most likely failure: the forward still special-cases arg positions; fix by forwarding the wrapper's full argument list verbatim to the captured unbound original with the real ClientRequest as receiver, and drop the now-unused chunk parameter."
+    },
+    {
+      "id": "harden-emission-path-against-crash-and-double-emit",
+      "order": 3,
+      "name": "Guard the emission path against callback crashes and double emission",
+      "goal": "Ensure one intercepted request produces exactly one LlmLogEntry and that a throwing pluggable callback in the deferred emission path can never crash the process.",
+      "boundedContext": "emission path",
+      "layer": "application",
+      "blastRadius": "medium",
+      "inputs": [
+        "packages/llm-http-proxy/src/interceptor.ts (emitLogEntry, completeCapture, attachCapture, CaptureState)",
+        "packages/llm-http-proxy/src/interceptor.test.ts",
+        "stage1.5 discovery findings finding-3-emitLogEntry-guard and finding-6-double-emit",
+        "docs task.md findings #3 and #6"
+      ],
+      "expectedResult": "interceptor.ts wraps the whole emitLogEntry body (parse, deriveUrl, resolveParser/parseCall, redact, logger) in try/catch and adds a state.emitted flag set at the top of completeCapture that early-returns on re-entry; interceptor.test.ts gains a regression test driving public attachCapture with a fake EventEmitter req that emits response+end then error and asserts entries.length===1 after a setImmediate flush, and a test with a providerParser whose extractModel throws asserting no unhandled rejection/crash, each failing before and passing after, with the existing install-twice and refused-connection single-emission tests still green.",
+      "dependsOn": [],
+      "rubric": [
+        {
+          "id": "exactly-once-emission-across-response-then-error",
+          "label": "Exactly-once emission across response-then-error",
+          "ruleStatement": "One intercepted request produces exactly one LlmLogEntry even when the fake req emits response+end and then error (or any duplicate terminal-signal ordering).",
+          "passCriteria": [
+            "completeCapture reads state.emitted at the top and early-returns without pushing a second entry when it is already true",
+            "state.emitted is set to true before the first emitLogEntry / entry push",
+            "interceptor.test.ts drives public attachCapture with a fake EventEmitter req emitting response then end then error and asserts entries.length === 1 after a setImmediate flush",
+            "the same holds for the reverse order (error before end)"
+          ],
+          "failureExamples": [
+            "error handler calls completeCapture again and a second entry is pushed",
+            "guard flag is set inside the setImmediate callback, leaving a race window",
+            "dedupe relies on comparing entry contents or timestamps rather than a boolean state.emitted"
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "emission-path-cannot-crash-process",
+          "label": "Emission path cannot crash the process",
+          "ruleStatement": "A throwing pluggable callback in the deferred emission path (providerParser.extractModel, redaction walk, sink) can never produce an unhandled exception or rejection.",
+          "passCriteria": [
+            "the entire body of emitLogEntry is wrapped in try/catch inside the setImmediate callback",
+            "the catch path swallows/logs the error without rethrowing and without scheduling further async work that can throw",
+            "interceptor.test.ts adds a test with a providerParser whose extractModel throws, asserting no unhandled rejection / no thrown error escapes the flush",
+            "no user-supplied callback is invoked outside the try/catch"
+          ],
+          "failureExamples": [
+            "try/catch wraps only the parser call but the sink invocation or redaction walk remains unguarded",
+            "catch block re-throws or calls process.nextTick with the error",
+            "a promise inside emitLogEntry is created without a .catch",
+            "test asserts on a log string but never asserts the absence of a crash"
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "guard-preserves-legitimate-first-emission",
+          "label": "Guard preserves the legitimate first emission",
+          "ruleStatement": "The state.emitted guard blocks only re-entry; the first, legitimate completeCapture for a captured request still emits its entry with unchanged content.",
+          "passCriteria": [
+            "for a normal single response+end lifecycle exactly one entry is emitted and its fields match pre-change expectations",
+            "requests where the capture decision was 'skip' still emit nothing",
+            "existing assertions on entry shape in interceptor.test.ts remain unmodified or tightened, not loosened",
+            "the early-return is reached only when state.emitted was already true"
+          ],
+          "failureExamples": [
+            "guard is checked before the capture-decision check, suppressing the first emission for some paths",
+            "state.emitted initialized to true",
+            "first emission now missing derived URL or buffered chunks because the guard reordered logic"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "regression-tests-fail-before-pass-after-deterministic",
+          "label": "Regression tests fail-before / pass-after and are deterministic",
+          "ruleStatement": "Each new regression test fails on the pre-fix code and passes on the post-fix code, using deterministic async flushing with no arbitrary sleeps.",
+          "passCriteria": [
+            "reverting interceptor.ts changes makes the new double-emit test and the throwing-parser test fail",
+            "tests await a setImmediate-based flush helper rather than setTimeout(\u2026, N)",
+            "tests use a fake EventEmitter req and controllable providerParser rather than real network/sockets",
+            "running the new tests repeatedly yields identical results"
+          ],
+          "failureExamples": [
+            "test passes even with the fix reverted",
+            "test uses await new Promise(r => setTimeout(r, 50))",
+            "test depends on a real refused connection or real socket timing",
+            "test order dependence"
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "existing-suite-and-toolchain-stay-green",
+          "label": "Existing suite and toolchain stay green",
+          "ruleStatement": "All pre-existing tests (notably install-twice and refused-connection single-emission) plus pnpm lint, typecheck, test, and build pass unchanged after the fix.",
+          "passCriteria": [
+            "the existing install-twice test and refused-connection single-emission test pass without edits to their assertions",
+            "new tests live in existing *.test.ts files in the package",
+            "pnpm lint, pnpm typecheck, pnpm test, pnpm build all exit 0",
+            "no new eslint-disable, @ts-ignore, or any-typed shims introduced in interceptor.ts"
+          ],
+          "failureExamples": [
+            "install-twice test now emits twice or had to be rewritten",
+            "typecheck fails because state.emitted is not added to the capture state type",
+            "build breaks due to an unused catch binding under strict lint",
+            "new test file added outside the package's test globs"
+          ],
+          "minScore": 9
+        }
+      ],
+      "healerHint": "If a dimension is weak, name the exact file:symbol (interceptor.ts completeCapture / emitLogEntry, interceptor.test.ts) and the concrete assertion or guard placement to add, and require the revert-to-fail demonstration and a setImmediate flush helper rather than restating that emission must happen once."
+    },
+    {
+      "id": "buffer-raw-body-chunks-before-utf8-decode",
+      "order": 4,
+      "name": "Buffer raw body-capture chunks before UTF-8 decode",
+      "goal": "Stop multi-byte characters that straddle a chunk boundary from being corrupted to U+FFFD in captured request and response bodies.",
+      "boundedContext": "chunk buffering",
+      "layer": "infrastructure",
+      "blastRadius": "medium",
+      "inputs": [
+        "packages/llm-http-proxy/src/interceptor.ts (CaptureState.requestBodyChunks/responseBodyChunks, appendChunk, emitLogEntry body assembly)",
+        "packages/llm-http-proxy/src/interceptor.test.ts (startServer helper)",
+        "stage1.5 discovery finding finding-7-multibyte-chunks",
+        "docs task.md finding #7"
+      ],
+      "expectedResult": "interceptor.ts stores body chunks as Buffer[] (string and object chunks converted to Buffer at append time) and concatenates then decodes once with toString('utf8') in emitLogEntry, using the node:string_decoder builtin where needed and adding no new dependency; interceptor.test.ts extends the response path so the server writes a body in two res.write() calls splitting a multi-byte character across the boundary and asserts entry.maskedResponseBody round-trips the character, failing before and passing after, with existing body-capture tests still green.",
+      "dependsOn": [],
+      "rubric": [
+        {
+          "id": "multibyte-boundary-roundtrip",
+          "label": "Multibyte chars split across chunk boundaries round-trip intact",
+          "ruleStatement": "When a multi-byte UTF-8 character is split across two or more captured body chunks, the decoded captured body must contain the original character, never U+FFFD.",
+          "passCriteria": [
+            "interceptor.ts buffers raw body chunks as Buffer[] and performs exactly one decode (Buffer.concat(...).toString('utf8'), or a single StringDecoder write/end pass) in the emission path",
+            "No per-chunk .toString() / string concatenation of body data occurs before the final concat-then-decode",
+            "A byte-identical body reassembled from N chunks equals the body reassembled from 1 chunk for the same bytes",
+            "Captured body for a 3- or 4-byte character straddling a write boundary decodes to that exact character"
+          ],
+          "failureExamples": [
+            "chunks.map(c => c.toString()).join('') applied before emission, yielding U+FFFD for a split char",
+            "Appending Buffer chunks onto a running string field so each append decodes independently",
+            "Using StringDecoder but calling only write() and never end()"
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "request-and-response-both-fixed",
+          "label": "Both request and response body capture use raw buffering",
+          "ruleStatement": "The raw-Buffer-buffer-then-single-decode strategy must be applied to both the request body capture path and the response body capture path.",
+          "passCriteria": [
+            "Request body accumulator and response body accumulator are both Buffer[]",
+            "Both maskedRequestBody and maskedResponseBody are produced from a single post-concat decode",
+            "No asymmetry where one direction still decodes per-chunk"
+          ],
+          "failureExamples": [
+            "Only the response path converted to Buffer[]; request path still concatenates strings per data event",
+            "Request path fixed but response path in the 'end' handler still does body += chunk"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "heterogeneous-chunk-inputs-handled",
+          "label": "String and object chunk inputs still handled",
+          "ruleStatement": "Chunk inputs that are strings or non-Buffer objects must be normalized to Buffer at append time and still captured correctly.",
+          "passCriteria": [
+            "Append logic coerces string chunks via Buffer.from(chunk, encoding) using the write call's encoding argument when present",
+            "Non-string / non-Buffer chunks are handled without throwing, consistent with prior behavior",
+            "Existing tests that send string request/response bodies still assert the same captured value"
+          ],
+          "failureExamples": [
+            "Buffer.concat called on an array containing a raw JS string, throwing 'expected Buffer'",
+            "Ignoring the encoding parameter of res.write(str, 'latin1')",
+            "New TypeError when a test passes a string body that previously worked"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "no-new-dependency-builtins-only",
+          "label": "No new npm dependency; builtins only",
+          "ruleStatement": "The fix must rely solely on Node builtins (Buffer, node:string_decoder); no new runtime dependency may be added.",
+          "passCriteria": [
+            "git diff of package.json shows no added entry under dependencies / peerDependencies",
+            "Any decoder use imports from 'node:string_decoder'",
+            "Lockfile shows no new package added",
+            "pnpm build succeeds without a new external module resolution"
+          ],
+          "failureExamples": [
+            "Adding 'iconv-lite' or 'utf8' to dependencies",
+            "Importing a userland buffer-concat helper package",
+            "New transitive package in pnpm-lock.yaml attributable to this change"
+          ],
+          "minScore": 9
+        },
+        {
+          "id": "regression-test-splits-multibyte-across-writes",
+          "label": "Regression test splits a multibyte char across two writes, fails-before/passes-after",
+          "ruleStatement": "interceptor.test.ts must add a test where the origin server emits a body in two res.write() calls that split a multi-byte character across the boundary, asserting the captured maskedResponseBody round-trips that character; it must fail against the pre-fix code and pass after.",
+          "passCriteria": [
+            "Test issues two separate res.write() calls whose byte split lands inside one multi-byte code point (verified by slicing Buffer.from(char) mid-sequence)",
+            "Assertion checks entry.maskedResponseBody contains the exact original character and no U+FFFD",
+            "Reverting interceptor.ts to the per-chunk decode makes this test fail",
+            "Pre-existing body-capture tests remain unchanged and green",
+            "Lives in an existing *.test.ts"
+          ],
+          "failureExamples": [
+            "Test writes the whole body in one res.write()",
+            "Asserting only body length or truthiness rather than character equality",
+            "Splitting between two characters (clean boundary)",
+            "Snapshot updated to enshrine the U+FFFD output"
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "gates-stay-green",
+          "label": "Lint, typecheck, test, and build stay green",
+          "ruleStatement": "After the change, pnpm lint, pnpm typecheck, pnpm test, and pnpm build must all pass.",
+          "passCriteria": [
+            "pnpm lint reports no new errors",
+            "pnpm typecheck passes with no new any / ts-ignore introduced to silence Buffer typing",
+            "pnpm test passes the full suite including the new regression test",
+            "pnpm build completes",
+            "After the package gates pass, the package dist is rebuilt and repo-root `nest build` plus root `jest` both pass (the 'green at both levels' bar from discovery build-test-setup)."
+          ],
+          "failureExamples": [
+            "Buffer[] field left implicitly typed as any[]",
+            "New eslint-disable added over the append logic",
+            "A previously green body-capture test now skipped"
+          ],
+          "minScore": 8
+        }
+      ],
+      "healerHint": "If a dimension is failing, make interceptor.ts push every request- and response-body chunk into a Buffer[] (wrapping string chunks with Buffer.from(chunk, encoding) at append time), decode exactly once in the emission path via Buffer.concat(chunks).toString('utf8') or a single node:string_decoder pass ending with end(), and add an interceptor.test.ts case that res.write()s a multi-byte character in two byte-split halves and asserts the captured body round-trips it."
+    }
+  ],
+  "successCriteria": [
+    "Findings #1-#7 are resolved (one phase each, with #2+#5 and #3+#6 paired within a single subsystem), each carrying a failing-before/passing-after regression test in the existing Jest *.test.ts files, with pnpm lint / typecheck / test / build green at BOTH the llm-http-proxy package level and the repo root (root nest build + root jest after the package dist is rebuilt through the link: consumer) and no new runtime dependency. Findings #8, #9 and #10 are deliberately deferred to a later Planning Horizon and are not certified here.",
+    "Fix redaction walk token key-matching and DAG traversal: redaction.ts drops bare 'token' for explicit *Token/*_token entries and walk() add-before/delete-after in both branches; redaction.test.ts gains a DAG regression test and a token-accounting regression test that fail before and pass after, existing circular-reference/idempotency/PII/X-Password tests still green.",
+    "Derive the URL scheme: interceptor.ts passes an https/http scheme derived from req.protocol into the unchanged deriveUrl at the emitLogEntry call site; a regression test asserts an intercepted TLS request logs an https:// URL, fail-before/pass-after, existing plain-http http:// test green.",
+    "Forward intercepted write/end faithfully: reflectCall no longer drops the encoding argument; a regression test asserts req.write(buf,'base64',cb) reaches the pristine prototype with the encoding and callback, fail-before/pass-after.",
+    "Guard the emission path against callback crashes and double emission: emitLogEntry body fully try/caught inside the setImmediate and a state.emitted once-guard at the top of completeCapture; interceptor.test.ts proves exactly one entry across response-then-error and no crash from a throwing providerParser, both fail-before/pass-after, existing install-twice and refused-connection single-emission tests green.",
+    "Buffer raw body-capture chunks before UTF-8 decode: interceptor.ts stores request and response body chunks as Buffer[] and decodes once via Buffer.concat/StringDecoder with no new dependency; interceptor.test.ts splits a multi-byte character across two res.write() calls and asserts the captured body round-trips it, fail-before/pass-after, existing body-capture tests green."
+  ],
+  "deferred": [
+    "#8 negative capture-decision cache (kNoCapture symbol tag short-circuiting shouldCapture in writeWrapper/endWrapper/onWrapper) \u2014 held for the next Planning Horizon to keep this one small and reviewable; the Planning Brief and project memory carry the context forward.",
+    "#9 collapse the fake per-provider parser registry to a single defaultParser, drop dead parserToTokenCounter, keep providerParser as the extension point \u2014 held for the next Planning Horizon; it is a breaking public-API change (index.ts exports + src/app.module.ts consumer in lockstep + package rebuild) spanning provider parser and app-module wiring.",
+    "#10 remove dead scaffolding from src/app.module.ts (sample*/masked* computed-then-voided at import; bare install() side effect moved into an OnApplicationBootstrap hook) \u2014 held for the next Planning Horizon; depends on #9.",
+    "Adding real per-provider parsing divergence \u2014 Finding #9 explicitly collapses to one default parser; re-introducing per-provider logic contradicts the fix.",
+    "The enforced-order request/response transformer pipeline with Content-Length accounting \u2014 a still-binding vision.md success bar deferred since horizon 1; no code-review finding touches it, tackled in a later horizon.",
+    "The latency-budget benchmark proving buffered interception overhead within an explicit budget \u2014 a still-binding vision.md success bar; blocked on an un-signed-off benchmark methodology (blockers.md), later horizon.",
+    "The OTEL span exporter demo activating only with optional @opentelemetry/* peer deps \u2014 a still-binding vision.md success bar deferred since horizon 1; later horizon.",
+    "Package identity / version bump / npm publish verification and the optional thin Nest adapter \u2014 open decisions in blockers.md and next-horizon-brief.md; not a code-review finding, later horizon.",
+    "Streaming / SSE response body parsing beyond the multi-byte boundary fix (#7) \u2014 #7 only asks for correct decoding of chunked bodies, not streaming semantics.",
+    "Redesigning the public InterceptorOptions / Logger / TokenCounter API beyond what #9 forces \u2014 done-ness bar is a bug-fix pass, not an API redesign.",
+    "Migrating the test runner or restructuring test files \u2014 tests go into the existing Jest *.test.ts files; tooling change is not requested.",
+    "Fixing issues elsewhere in the Nest app or other packages \u2014 only app.module.ts's dead scaffolding (#10) is named.",
+    "Version bump, changelog, or publishing the package \u2014 no finding concerns release mechanics.",
+    "Extracting the app.module.ts sample code into a fully-built example/bootstrap module \u2014 #10 only requires removing the dead import-time computation and side effect."
+  ]
+}

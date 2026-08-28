@@ -41,10 +41,12 @@ export {
 
 /** Payload bookkeeping attached to a ClientRequest whose url is captured. */
 interface CaptureState {
-  requestBodyChunks: string[];
-  responseBodyChunks: string[];
+  requestBodyChunks: Buffer[];
+  responseBodyChunks: Buffer[];
   capturedEnd: boolean;
   finished: boolean;
+  /** True once completeCapture has started the (single) deferred emission. */
+  emitted: boolean;
   /** Caller trace captured SYNCHRONOUSLY at write/end time (the async
    *  emission path loses the caller stack). */
   callerTrace: string;
@@ -65,26 +67,38 @@ function tag(target: object): Tagged {
   return target as unknown as Tagged;
 }
 
-function appendChunk(chunks: string[], chunk: unknown): void {
+function appendChunk(
+  chunks: Buffer[],
+  chunk: unknown,
+  encoding?: string,
+): void {
   if (chunk === null || chunk === undefined) {
     return;
   }
   if (typeof chunk === 'string') {
-    chunks.push(chunk);
+    // Keep the raw bytes so a multi-byte character split across two
+    // chunks is not corrupted by per-chunk decoding: the final UTF-8
+    // decode happens exactly once, on the concatenated buffer.
+    chunks.push(Buffer.from(chunk, encoding as BufferEncoding));
   } else if (Buffer.isBuffer(chunk) || chunk instanceof Uint8Array) {
-    chunks.push(Buffer.from(chunk as Uint8Array).toString('utf8'));
+    chunks.push(Buffer.from(chunk as Uint8Array));
   } else if (typeof chunk === 'object' || typeof chunk === 'function') {
     try {
-      chunks.push(JSON.stringify(chunk));
+      chunks.push(Buffer.from(JSON.stringify(chunk), 'utf8'));
     } catch {
-      chunks.push('<unserializable>');
+      chunks.push(Buffer.from('<unserializable>', 'utf8'));
     }
   } else {
     // Primitive (number | boolean | bigint | symbol): safe, and the type
     // guard above already excluded objects, so String() cannot produce the
     // `[object Object]` leak the lint rule guards against.
-    chunks.push(String(chunk));
+    chunks.push(Buffer.from(String(chunk), 'utf8'));
   }
+}
+
+/** Extract the optional encoding argument from a write/end arg list. */
+function encodingArg(args: unknown[]): string | undefined {
+  return typeof args[1] === 'string' ? args[1] : undefined;
 }
 
 /**
@@ -196,17 +210,16 @@ export class Interceptor {
       const tagged = tag(this);
       const capture = tagged[kCapture] as CaptureState | undefined;
       if (capture !== undefined) {
-        appendChunk(capture.requestBodyChunks, args[0]);
+        appendChunk(capture.requestBodyChunks, args[0], encodingArg(args));
       } else if (shouldCapture(this, self.providers)) {
         self.attachCapture(this, captureCallerTrace());
         const state = tagged[kCapture] as CaptureState;
-        appendChunk(state.requestBodyChunks, args[0]);
+        appendChunk(state.requestBodyChunks, args[0], encodingArg(args));
       }
       return reflectCall(
         originalWrite as unknown as ReflectFn,
         this,
         args,
-        args[0] as string | Buffer,
       ) as boolean;
     };
     const endWrapper = function (
@@ -217,7 +230,7 @@ export class Interceptor {
       const capture = tagged[kCapture] as CaptureState | undefined;
       if (capture !== undefined) {
         if (args[0] !== undefined) {
-          appendChunk(capture.requestBodyChunks, args[0]);
+          appendChunk(capture.requestBodyChunks, args[0], encodingArg(args));
         }
         capture.capturedEnd = true;
         capture.finished = true;
@@ -225,7 +238,7 @@ export class Interceptor {
         self.attachCapture(this, captureCallerTrace());
         const state = tagged[kCapture] as CaptureState;
         if (args[0] !== undefined) {
-          appendChunk(state.requestBodyChunks, args[0]);
+          appendChunk(state.requestBodyChunks, args[0], encodingArg(args));
         }
         state.capturedEnd = true;
         state.finished = true;
@@ -234,7 +247,6 @@ export class Interceptor {
         originalEnd as unknown as ReflectFn,
         this,
         args,
-        args[0] as string | Buffer | undefined,
       ) as ClientRequest;
     };
 
@@ -312,6 +324,7 @@ export class Interceptor {
       responseBodyChunks: [],
       capturedEnd: false,
       finished: false,
+      emitted: false,
       callerTrace: callerTrace ?? 'unknown',
     };
     reqTag[kCapture] = state;
@@ -338,9 +351,20 @@ export class Interceptor {
     state: CaptureState,
     error?: Error,
   ): void {
+    // Exactly-once guard: response-end and error can both fire for one
+    // request; only the first terminal signal may schedule emission.
+    if (state.emitted) {
+      return;
+    }
+    state.emitted = true;
     // Deferred emission: never on the synchronous request path.
     setImmediate(() => {
-      this.emitLogEntry(req, state, error);
+      try {
+        this.emitLogEntry(req, state, error);
+      } catch {
+        // A throwing pluggable callback (providerParser / tokenCounter /
+        // logger) in the deferred path must never crash the process.
+      }
     });
   }
 
@@ -353,8 +377,10 @@ export class Interceptor {
     state: CaptureState,
     error?: Error,
   ): void {
-    const rawRequest = state.requestBodyChunks.join('');
-    const rawResponse = state.responseBodyChunks.join('');
+    const rawRequest = Buffer.concat(state.requestBodyChunks).toString('utf8');
+    const rawResponse = Buffer.concat(state.responseBodyChunks).toString(
+      'utf8',
+    );
 
     let requestJson: unknown;
     let responseJson: unknown;
@@ -373,7 +399,7 @@ export class Interceptor {
       }
     }
 
-    const url = deriveUrl(req);
+    const url = deriveUrl(req, resolveScheme(req));
     const callerTrace = state.callerTrace || 'unknown';
 
     // Parse step: route through the registered parser. A caller-supplied
@@ -457,21 +483,13 @@ function reflectCall(
   original: ReflectFn,
   receiver: unknown,
   args: unknown[],
-  chunk: string | Buffer | undefined,
 ): any {
-  const rest = args.slice(1) as [
-    string | undefined,
-    ((error?: Error | null) => void) | undefined,
-  ];
-  const encoding = rest[0];
-  const callback = rest[1];
-  if (callback !== undefined) {
-    return original.call(receiver, chunk, callback);
-  }
-  if (encoding !== undefined) {
-    return original.call(receiver, chunk, encoding);
-  }
-  return original.call(receiver, chunk);
+  // Forward the intercepted call to the pristine original with the exact
+  // argument list the caller used — never reconstruct a subset. Node's
+  // runtime dispatch branches on argument types (chunk, encoding,
+  // callback), so dropping a positional arg (e.g. encoding when a
+  // callback is also present) would silently corrupt the request.
+  return original.apply(receiver, args);
 }
 
 // ---------------------------------------------------------------------------
@@ -507,6 +525,26 @@ function reqHostname(req: ClientRequest): string | undefined {
       ? req.getHeader('host')?.toString().split(':')[0]
       : undefined);
   return hostname || undefined;
+}
+
+/** Resolve the URL scheme for a request: https when TLS-backed, else http. */
+export function resolveScheme(req: ClientRequest): 'http' | 'https' {
+  const view = req as unknown as {
+    protocol?: string;
+    agent?: { protocol?: string };
+    socket?: { encrypted?: boolean } | null;
+    connection?: { encrypted?: boolean } | null;
+  };
+  if (view.protocol === 'https:') {
+    return 'https';
+  }
+  if (view.agent?.protocol === 'https:') {
+    return 'https';
+  }
+  if (view.socket?.encrypted === true || view.connection?.encrypted === true) {
+    return 'https';
+  }
+  return 'http';
 }
 
 /** Derive the absolute url for a captured request. Scheme = entry type. */

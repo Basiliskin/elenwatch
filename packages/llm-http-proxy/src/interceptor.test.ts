@@ -8,15 +8,18 @@
  * never leaks across files.
  */
 
+import { EventEmitter } from 'node:events';
 import * as http from 'node:http';
 import {
   Interceptor,
   deriveUrl,
+  resolveScheme,
   shouldCapture,
   defaultEstimateInputTokens,
   defaultExtractOutputTokens,
 } from './interceptor';
 import type { LlmLogEntry } from './options';
+import type { ProviderParser } from './provider-parser';
 
 /**
  * Jest's module registry exposes `http.request` as a getter-only, non-
@@ -284,6 +287,54 @@ describe('off-request-path capture ordering', () => {
       await close();
     }
   });
+
+  test('write(chunk, encoding, cb) forwards encoding and callback verbatim (finding #4)', async () => {
+    const { port, close } = await startServer();
+    try {
+      const proto = http.ClientRequest.prototype;
+      const origWrite = proto.write;
+      const writeSpy = jest.spyOn(proto, 'write');
+      const interceptor = new Interceptor({
+        providers: ['127.0.0.1'],
+        capturePayloads: true,
+        logger: () => {},
+      });
+      interceptor.install();
+      const cb = jest.fn();
+      await new Promise<void>((resolve, reject) => {
+        const req = http.request({
+          hostname: '127.0.0.1',
+          port,
+          path: '/',
+          method: 'POST',
+        });
+        req.on('response', (res) => {
+          res.resume();
+          res.on('end', resolve);
+        });
+        req.on('error', reject);
+        const chunk = Buffer.from('aGVsbG8=', 'base64');
+        req.write(chunk, 'base64', cb);
+        req.end();
+      });
+      interceptor.restore();
+      // The pristine original (spy) must have received the full argument
+      // list: chunk, 'base64', AND the callback — never a subset.
+      const call = writeSpy.mock.calls.find(
+        (c) =>
+          c[0] instanceof Buffer &&
+          c[1] === 'base64' &&
+          typeof c[2] === 'function',
+      );
+      expect(call).toBeDefined();
+      expect(call?.[2]).toBe(cb);
+      expect(call?.[1]).toBe('base64');
+      writeSpy.mockRestore();
+      expect(proto.write).toBe(origWrite);
+    } finally {
+      await close();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -362,6 +413,55 @@ describe('url derivation', () => {
     } finally {
       await close();
     }
+  });
+
+  test('TLS request via https.request is logged with an https:// url (finding #1)', async () => {
+    const entries: LlmLogEntry[] = [];
+    const interceptor = new Interceptor({
+      providers: ['api.example.com'],
+      capturePayloads: true,
+      logger: (entry) => entries.push(entry),
+    });
+    // Real https.request produces a request whose protocol is 'https:' and
+    // whose socket is a TLSSocket. Drive the emission path through the
+    // public attachCapture with a fake req exposing protocol + getHeader.
+    const fakeReq = new EventEmitter() as unknown as http.ClientRequest;
+    (fakeReq as unknown as { protocol: string }).protocol = 'https:';
+    (fakeReq as unknown as { hostname: string }).hostname = 'api.example.com';
+    (fakeReq as unknown as { path: string }).path = '/v1/chat/completions';
+    (fakeReq as unknown as { getHeader: () => string | undefined }).getHeader =
+      () => 'api.example.com';
+    interceptor.attachCapture(fakeReq);
+    const fakeRes = new EventEmitter() as unknown as http.IncomingMessage;
+    const reqTagged = fakeReq as unknown as {
+      emit: (ev: string, ...args: unknown[]) => boolean;
+    };
+    reqTagged.emit('response', fakeRes);
+    (fakeRes as unknown as { emit: (ev: string) => boolean }).emit('end');
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    interceptor.restore();
+    expect(entries.length).toBe(1);
+    expect(entries[0].url).toBe('https://api.example.com/v1/chat/completions');
+  });
+
+  test('resolveScheme falls back to socket.encrypted for TLS requests', () => {
+    const plain = {
+      hostname: 'x.example.com',
+      protocol: 'http:',
+    } as unknown as http.ClientRequest;
+    expect(resolveScheme(plain)).toBe('http');
+    const tlsBySocket = {
+      hostname: 'x.example.com',
+      protocol: 'http:',
+      socket: { encrypted: true },
+    } as unknown as http.ClientRequest;
+    expect(resolveScheme(tlsBySocket)).toBe('https');
+    const tlsByAgent = {
+      hostname: 'x.example.com',
+      agent: { protocol: 'https:' },
+    } as unknown as http.ClientRequest;
+    expect(resolveScheme(tlsByAgent)).toBe('https');
   });
 });
 
@@ -451,6 +551,76 @@ describe('error-path emission', () => {
 });
 
 // ---------------------------------------------------------------------------
+// emission-path hardening (findings #3 and #6)
+// ---------------------------------------------------------------------------
+
+describe('emission path: exactly-once + cannot crash', () => {
+  /** Build a fake ClientRequest exposing only what attachCapture needs. */
+  function fakeReq(): http.ClientRequest {
+    const req = new EventEmitter() as unknown as http.ClientRequest;
+    (req as unknown as { hostname: string }).hostname = 'api.example.com';
+    (req as unknown as { path: string }).path = '/v1/chat/completions';
+    (req as unknown as { protocol: string }).protocol = 'https:';
+    (req as unknown as { getHeader: () => string | undefined }).getHeader =
+      () => 'api.example.com';
+    return req;
+  }
+
+  function flush(): Promise<void> {
+    return new Promise((r) => setImmediate(r));
+  }
+
+  test('response-then-error on one request emits exactly one entry (finding #6)', async () => {
+    const entries: LlmLogEntry[] = [];
+    const interceptor = new Interceptor({
+      providers: ['api.example.com'],
+      capturePayloads: true,
+      logger: (entry) => entries.push(entry),
+    });
+    const req = fakeReq();
+    interceptor.attachCapture(req);
+    const res = new EventEmitter() as unknown as http.IncomingMessage;
+    (req as unknown as EventEmitter).emit('response', res);
+    (res as unknown as EventEmitter).emit('end');
+    // The error terminal signal fires on the same request afterwards.
+    (req as unknown as EventEmitter).emit(
+      'error',
+      Object.assign(new Error('boom'), { name: 'boom' }),
+    );
+    await flush();
+    await flush();
+    expect(entries.length).toBe(1);
+  });
+
+  test('a throwing providerParser in the emission path cannot crash (finding #3)', async () => {
+    const entries: LlmLogEntry[] = [];
+    const boomParser: ProviderParser = {
+      extractModel: () => {
+        throw new Error('parser blew up');
+      },
+      estimateInputTokens: () => 0,
+      extractOutputTokens: () => 0,
+    };
+    const interceptor = new Interceptor({
+      providers: ['api.example.com'],
+      capturePayloads: true,
+      providerParser: boomParser,
+      logger: (entry) => entries.push(entry),
+    });
+    const req = fakeReq();
+    interceptor.attachCapture(req);
+    const res = new EventEmitter() as unknown as http.IncomingMessage;
+    (req as unknown as EventEmitter).emit('response', res);
+    (res as unknown as EventEmitter).emit('end');
+    await flush();
+    await flush();
+    // The parser threw inside the deferred emission path; the process did
+    // not crash, and no entry was produced (the entry assembly aborted).
+    expect(entries.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // default-redaction
 // ---------------------------------------------------------------------------
 
@@ -521,6 +691,86 @@ describe('default-redaction: no raw payload in default emissions', () => {
     expect(serialized).not.toContain('leak-me');
     expect(serialized).not.toContain('sk-x');
     expect(entries[0].error).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// multibyte-chunk-buffering (finding #7)
+// ---------------------------------------------------------------------------
+
+describe('multibyte body chunks round-trip intact (finding #7)', () => {
+  const MAGIC = 'héllo wörld 中\u{1F600}'; // include a 2-, 3-, and 4-byte char
+
+  test('response body split mid-character is not corrupted to U+FFFD', async () => {
+    const body = JSON.stringify({
+      choices: [{ message: { content: MAGIC } }],
+    });
+    const buf = Buffer.from(body, 'utf8');
+    // Byte offset where the 'é' (0xC3 0xA9) begins, then split INSIDE it.
+    const firstCharByte = Buffer.byteLength(body.slice(0, body.indexOf('é')));
+    const split = firstCharByte + 1; // first byte of é in chunk A, second in chunk B
+    // Sanity: decoding either half alone corrupts the split char to U+FFFD.
+    expect(buf.subarray(firstCharByte, split).toString('utf8')).toBe('\uFFFD');
+    expect(buf.subarray(split, split + 1).toString('utf8')).toBe('\uFFFD');
+
+    const { port, close } = await startServer((req, res) => {
+      req.resume();
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.write(buf.subarray(0, split));
+        res.write(buf.subarray(split));
+        res.end();
+      });
+    });
+    try {
+      const { entries } = await withEntries(
+        { providers: ['127.0.0.1'], capturePayloads: true },
+        () => post(port, JSON.stringify({ model: 'gpt-4' })),
+      );
+      expect(entries.length).toBe(1);
+      const masked = entries[0].maskedResponseBody as {
+        choices: Array<{ message: { content: string } }>;
+      };
+      expect(masked.choices[0].message.content).toBe(MAGIC);
+      expect(JSON.stringify(entries[0].maskedResponseBody)).not.toContain(
+        '\uFFFD',
+      );
+    } finally {
+      await close();
+    }
+  });
+
+  test('request body sent in byte-split Buffer writes round-trips intact', async () => {
+    const body = JSON.stringify({ messages: [{ content: MAGIC }] });
+    const buf = Buffer.from(body, 'utf8');
+    const split = 1; // split inside the first multi-byte char sequence
+    const { port, close } = await startServer();
+    try {
+      const { entries } = await withEntries(
+        { providers: ['127.0.0.1'], capturePayloads: true },
+        () =>
+          new Promise<void>((resolve, reject) => {
+            const req = http.request(
+              { hostname: '127.0.0.1', port, path: '/', method: 'POST' },
+              (res) => {
+                res.resume();
+                res.on('end', resolve);
+              },
+            );
+            req.on('error', reject);
+            req.write(buf.subarray(0, split));
+            req.write(buf.subarray(split));
+            req.end();
+          }),
+      );
+      expect(entries.length).toBe(1);
+      const masked = entries[0].maskedRequestBody as {
+        messages: Array<{ content: string }>;
+      };
+      expect(masked.messages[0].content).toBe(MAGIC);
+    } finally {
+      await close();
+    }
   });
 });
 

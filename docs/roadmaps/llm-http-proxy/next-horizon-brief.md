@@ -1,51 +1,57 @@
-# Next-horizon brief (for horizon 2) — prepared Stage 3.5, horizon 1
+# Next-horizon brief (for horizon 3) — prepared Stage 3.5, horizon 2
+
+Horizon 2 (review fixes, correctness findings #1–#7) is planned but **not yet executed** — confirm it
+has landed and both gate levels are green before planning horizon 3 on top of it. Horizon 3's natural
+content is the three deferred code-review findings: **#8** (negative capture-decision cache), **#9**
+(collapse the fake per-provider parser registry), **#10** (remove dead scaffolding from
+`src/app.module.ts`). The older vision-track deferrals (latency benchmark, transformer pipeline, OTEL
+exporter, package identity/publish, Nest adapter) remain binding `vision.md` success bars but are a
+separate, larger slice — keep them for horizon 4+ unless a scope decision promotes them.
 
 ## Unknowns
-- Has an npm package name/version/license been chosen and verified available (npm view) for packages/<name>/, or is it still open?
-- Is there a concrete signed-off latency budget and benchmark methodology (numbers, hardware, method), or still un-made?
-- Does the new interceptor keep the existing public contract verbatim (LlmLoggingOptions providers/logger/tokenCounter + LlmLogEntry) plus additive seams, or may the API break before consumers commit?
-- When capture is opted in, must log entries include the payload at all, or does 'no raw bodies by default' + configured-field masking satisfy the redaction bar?
-- Must error-path emission records carry the four default capabilities (model/tokens/url/callerTrace) or may they be a reduced shape?
-- Are consumers presumed plain Node ESM, CJS, or both — is dual-format actually required (only consumer is a CommonJS Nest app)?
-- May benchmark/test infra touch root-level tooling (CI, root README) given rollback-safe scaffold requires root untouched?
-- Does the write/end capture wrapper need to preserve exact req.write/req.end return semantics incl. callback/encoding arg forwarding for streaming callers?
-- Is the Error().stack caller-trace walk acceptable as shipped default, or is a source-mapped/frame-identified trace required?
-- Is process-global monkey-patching of http/https.request acceptable for a general-audience npm package (coexisting-APM risk), or is a non-invasive alternative mandated before publishing?
+- Has horizon 2 actually been executed and merged, with `packages/llm-http-proxy` gates **and** repo-root `nest build` + root `jest` green?
+- Is `#9`'s registry collapse an acceptable clean break on the unpublished 0.1.0 package (single in-repo consumer), or are thin deprecated shims required?
+- What does `src/app.module.ts`'s `customProviderParser` actually need once the registry is gone — `defaultParser.extractModel(...)`, the `defaultEstimateInputTokens`/`defaultExtractOutputTokens` helpers directly, or drop the delegate-then-override pattern?
+- Is `#8` worth shipping at all before a latency benchmark exists to justify and measure it?
+- Should `#9` + `#10` be one coupled phase (they share the `src/app.module.ts` edit and the mandatory package-rebuild-before-root-build step, and `#10` depends on `#9`) or two tightly-ordered phases?
 
-## Research (before planning horizon 2)
-- Inspect packages/<name>/ after horizon 1: git status, npm pack --dry-run, plain-Node require()/import() smoke — plan publish-verification against the real artifact.
-- Re-check src/llm-http-logging/llm-http-interceptor.service.ts lines 109-111 (empty error handler) and 150 (req.protocol url bug) — confirm horizon-1 interceptor-core actually fixed them before transformer Content-Length work.
-- Read packages/<name>/package.json + jest config vs root Nest config — confirm dual ESM/CJS build and standalone lockfile before multi-node/publish work.
-- Run npm view <chosen-name> / npm whoami to check registry availability and auth state before publish-verification.
-- Re-read src/llm-http-logging/llm-http-logging.module.ts and src/app.module.ts once the package grows to check LlmHttpLoggingModule.register still compiles before nest-adapter-and-migration.
-- Check git status for root workspace drift (README/package.json/eslint.config.mjs) if docs/CI work is considered.
-- Re-read the payload-redaction default-no-raw rubric to confirm what 'no raw sensitive value in any emitted entry' covers when deciding whether a custom Logger can leak past redaction.
+## Research (before planning horizon 3)
+- `git status` + run the two-level gate to establish the real green baseline after horizon 2.
+- Read `packages/llm-http-proxy/src/provider-parser.ts` and `index.ts` in full: enumerate exactly which symbols `#9` deletes (`parserToTokenCounter` — dead; the 5 parser aliases; `PARSERS_BY_HOST`; `resolveParser` subdomain matching) vs. keeps (`defaultParser`, the `providerParser` option, `ProviderParser`/`ParseResult` types, `defaultEstimateInputTokens`, `defaultExtractOutputTokens`, `parseCall`).
+- Read `packages/llm-http-proxy/src/interceptor.ts` `writeWrapper`/`endWrapper`/`onWrapper` + the `kWriteWrapper`/`kEndWrapper`/`kCapture` symbol-tag infra to pin where a `kNoCapture` tag is set and short-circuited for `#8` (three call sites — `onWrapper` is the easily-missed one).
+- Read `src/app.module.ts` lines ~1–45 (real wiring: `customProviderParser`, `captureLogger`, `interceptorOptions`, `install()`, `onApplicationShutdown`) and ~68–95 (dead `sample*`/`void`) to size the `#10` edit and design the `OnApplicationBootstrap`/`onModuleInit` hook pairing with the existing `restore()`.
+- `grep` the whole repo for imports of `resolveParser` / `parseCall` / the parser aliases — confirm `src/app.module.ts` is the only external consumer before treating `#9` as a contained break.
+- Read `provider-parser.test.ts` (342 lines): the `distinct parser per host` and `subdomain resolves` tests assert sameness/defined-ness, not real divergence, and must be rewritten or deleted; every other `resolveParser(host)` handle needs updating.
 
-## Decisions needed (horizon 2 cannot avoid these)
-- Package identity: name, initial version, license, and whether it may become a public registry package at all.
-- Latency budget + benchmark methodology: explicit numbers and fixture/hardware/measurement definition.
-- TS-consumer contract: whether published LlmLogEntry/LlmLoggingOptions API is semver-frozen before adapter/docs work.
-- Process-patch strategy: global monkey-patching acceptable to ship, or less invasive approach required before publish.
-- Monorepo regime: root workspaces/proxies or full isolation under packages/<name> — determines CI/matrix staging.
-- Redaction scope: 'no raw bodies' as strict opt-in capture vs. hard payload-layer guarantee inherited by all emission paths.
-- Extension-seam posture: streaming/SSE/TLS/retries/auth/proxy as first-class features or interface-only per the horizon-1 assumption.
+## Decisions needed (horizon 3 cannot avoid these)
+- `#9` public-API posture: clean break (drop `resolveParser`/`parseCall` registry-style exports, update `index.ts` + `interceptor.ts` + `app.module.ts` in lockstep, version bump) vs. thin deprecated shims.
+- Whether `#8` is in scope for horizon 3 or dropped/deferred as YAGNI until a latency benchmark exists.
+- Phase structure for `#9` + `#10`: one coupled phase vs. two strictly-ordered phases (`#10` after `#9`).
+- Horizon-3 scope boundary: pure `#8`/`#9`/`#10` cleanup (recommended, small) vs. also resuming the vision-track work — the latter makes the pre-existing package-identity / latency-methodology / semver-freeze / monkey-patch-strategy blockers binding and dominant.
+- Whether the package's built `dist` is committed or CI-rebuilt (root `nest build` reads it via `link:`).
 
 ## Artifacts to inspect
-- packages/<name>/ (after horizon 1 completes)
-- src/llm-http-logging/llm-http-interceptor.service.ts
-- src/llm-http-logging/llm-http-logging.module.ts
-- src/app.module.ts
-- package.json / tsconfig.json / eslint.config.mjs (root, for drift)
-- docs/roadmaps/llm-http-proxy/horizons/horizon-01-llm-http-proxy-roadmap.json (deferred entries + rubric bars)
+- `docs/roadmaps/llm-http-proxy/horizons/horizon-02-review-fixes-roadmap.json` + `.status.json` (once executed)
+- `packages/llm-http-proxy/src/provider-parser.ts`, `index.ts`, `provider-parser.test.ts`
+- `packages/llm-http-proxy/src/interceptor.ts` (`writeWrapper`/`endWrapper`/`onWrapper` + symbol-tag infra; `emitLogEntry` parser call site)
+- `src/app.module.ts`
+- `packages/llm-http-proxy/package.json` + its three tsconfigs + `eslint.config.mjs` + inlined Jest config (two-level gate design)
+- `docs/roadmaps/llm-http-proxy/{vision.md, decisions.md, blockers.md}` (still-binding vision success bars + prior decisions)
 
 ## Recommended next-horizon scope
-The next horizon should attempt roughly three to four phases, front-loading the two unresolved required
-materials — package identity and a signed-off latency budget — because most deferred work dangles off them.
-Engineering-wise, take the transformer pipeline and the fixture-based latency benchmark together (they pair:
-the benchmark must prove the Content-Length/mutation work stays off the request path), then follow with
-publish-verification (pack dry-run, non-Nest consumer sandbox, Node 18/20/22 matrix) once package content is
-final. Hold off on the Nest adapter/migration, package documentation, and the OTEL span exporter until the
-public API (LlmLogEntry/LlmLoggingOptions and the Logger seam) is declared frozen, and treat extension-seams
-as out of reach until a second real implementation exists. The risks to guard: transformer Content-Length
-accounting and the singleton/restore design of the interceptor core are the two places benchmark numbers can
-quietly regress.
+Treat horizon 3 as a small, self-contained cleanup horizon of **roughly two to three phases** sitting
+on top of the shipped horizon-2 review fixes (confirm those are landed and green first). Take `#9`
+(collapse the fake per-provider parser registry to one `defaultParser`, drop dead
+`parserToTokenCounter`, keep the `providerParser` option as the extension point) and `#10` (remove the
+dead `src/app.module.ts` scaffolding, move `install()` into a bootstrap hook) as one coupled unit or
+two tightly-ordered phases: they share the `src/app.module.ts` edit, `#10` depends on `#9`, the public
+export surface in `index.ts` changes deliberately (a breaking bump is acceptable on the unpublished
+0.1.0 with its single in-repo consumer), and every gate must rebuild `packages/llm-http-proxy`'s
+`dist` before the repo-root `nest build` sees it. `#8` (the negative capture-decision cache) is
+independent and low-value — scope it in only if a decision confirms the sole performance finding is
+worth shipping ahead of the latency benchmark; if kept it is a contained `interceptor.ts` change
+adding a `kNoCapture` symbol tag at three wrapper call sites (including the easily-missed `onWrapper`),
+safe because the request hostname is fixed after construction. Do **not** fold in the vision-track
+deferrals (transformer pipeline, latency-budget benchmark, OTEL span exporter) unless a scope decision
+explicitly promotes them, in which case the package-identity / semver-freeze / monkey-patch-strategy
+decisions in `blockers.md` must be resolved first and will dominate the horizon.

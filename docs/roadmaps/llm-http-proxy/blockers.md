@@ -6,3 +6,6 @@
 - 2026-08-28 | horizon 1 | may the root repo gain workspaces/CI, or must the package stay fully isolated under packages/ (rollback-safe)?
 - 2026-08-28 | horizon 1 | under 'no raw bodies', is payload capture strictly opt-in or a hard guarantee all emission paths (incl. third-party loggers) inherit?
 - 2026-08-28 | horizon 1 | are streaming/SSE/TLS/retries/auth/proxy seams ever to become first-class features or stay interface-only?
+- 2026-08-28 | horizon 2 | is finding #9's registry collapse a clean break (drop resolveParser/parseCall from index.ts, bump version) or must thin deprecated shims stay? -- unpublished 0.1.0 with one in-repo consumer argues clean break
+- 2026-08-28 | horizon 2 | is finding #8 (negative capture-decision cache) worth shipping before a latency benchmark exists to justify and measure it, or drop it as YAGNI?
+- 2026-08-28 | horizon 2 | should horizon 3 be a small #8/#9/#10 cleanup only, or also resume the vision-track work (transformer pipeline, latency benchmark, OTEL) -- if the latter, the pre-existing next-horizon-brief decisions (package identity, latency methodology, semver freeze) dominate

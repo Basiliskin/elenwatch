@@ -1,2 +1,4 @@
 # Project state
 - 2026-08-28 | horizon 1 | planned | 5 phases (scaffold, core, parser, redaction, logger); gate passed 2 iterations (1 success-coverage blocker healed, 1 minor accepted as debt)
+- 2026-08-28 | horizon 2 | planned | 5 phases (redaction-walk #2+#5, derived-url-scheme #1, request-reflection #4, emission-path-guard #3+#6, chunk-buffering #7); review-fixes pass; gate passed 3 iterations (2 major healed: phase-blast-radius split + success-coverage rescope; 1 minor accepted as debt); #8/#9/#10 deferred to horizon 3
+- 2026-08-28 | horizon 2 | completed | 5 phases; findings #1-#7 fixed (URL scheme, token redaction, DAG walk, reflectCall forwarding, emission guards, multibyte buffering) with fail-before/pass-after regression tests; package 89/89 + root gates green; #8/#9/#10 remain deferred to horizon 3

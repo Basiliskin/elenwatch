@@ -20,10 +20,13 @@ export const DEFAULT_PLACEHOLDER = '[REDACTED]';
 /**
  * Default field names that are always masked when capturePayloads is
  * enabled. Conservative: PII (email/phone/ssn/name), secrets (password/
- * token/key/secret/credential/authorization), and financial data (card /
- * cvv / iban / account / routing). Substrings match (e.g. `userEmail`
- * hits `email`), so a caller does not need to enumerate every camelCase
- * variant.
+ * auth-token/key/secret/credential/authorization), and financial data
+ * (card / cvv / iban / account / routing). Substrings match (e.g.
+ * `userEmail` hits `email`), so a caller does not need to enumerate every
+ * camelCase variant. Bare `token` is NOT a needle: it would substring-
+ * match accounting fields like `completion_tokens` / `total_tokens`;
+ * real credential keys are enumerated explicitly (`access_token`,
+ * `authToken`, `api_key`, ...) instead.
  */
 export const DEFAULT_SENSITIVE_FIELDS: readonly string[] = [
   'password',
@@ -31,11 +34,16 @@ export const DEFAULT_SENSITIVE_FIELDS: readonly string[] = [
   'secret',
   'apiKey',
   'api_key',
-  'token',
   'accessToken',
   'access_token',
   'refreshToken',
   'refresh_token',
+  'authToken',
+  'auth_token',
+  'apiToken',
+  'api_token',
+  'idToken',
+  'id_token',
   'authorization',
   'credential',
   'credentials',
@@ -212,19 +220,24 @@ function walk(
   }
   seen.add(value);
 
+  let result: unknown;
   if (Array.isArray(value)) {
-    return value.map((item) => walk(item, resolved, seen));
-  }
-
-  // Plain object: walk entries, masking any whose key is sensitive.
-  const out: Record<string, unknown> = {};
-  const record = value as Record<string, unknown>;
-  for (const key of Object.keys(record)) {
-    if (isSensitiveKey(key, resolved.fieldNeedles)) {
-      out[key] = resolved.placeholder;
-    } else {
-      out[key] = walk(record[key], resolved, seen);
+    result = value.map((item) => walk(item, resolved, seen));
+  } else {
+    // Plain object: walk entries, masking any whose key is sensitive.
+    const out: Record<string, unknown> = {};
+    const record = value as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+      if (isSensitiveKey(key, resolved.fieldNeedles)) {
+        out[key] = resolved.placeholder;
+      } else {
+        out[key] = walk(record[key], resolved, seen);
+      }
     }
+    result = out;
   }
-  return out;
+  // Delete after recursing so a legitimately shared (DAG) subtree visited
+  // again from a sibling path is fully re-walked, not mistaken for a cycle.
+  seen.delete(value);
+  return result;
 }

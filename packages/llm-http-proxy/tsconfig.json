@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
-    "types": ["node"],
+    "types": ["node", "jest"],
     "module": "commonjs",
     "moduleResolution": "node",
     "declaration": true,

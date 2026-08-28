@@ -244,6 +244,69 @@ describe('error-path emissions honor redaction', () => {
 });
 
 // ---------------------------------------------------------------------------
+// regression: token-accounting fields survive the walk; DAG shared subtrees
+// are not clobbered (review findings #2 and #5)
+// ---------------------------------------------------------------------------
+
+describe('token-accounting fields survive redaction (finding #2)', () => {
+  test('completion_tokens/prompt_tokens/total_tokens/max_tokens retain values, access_token still redacted', () => {
+    const input = {
+      model: 'gpt-4',
+      usage: {
+        prompt_tokens: 12,
+        completion_tokens: 34,
+        total_tokens: 46,
+        max_tokens: 128,
+      },
+      auth: { access_token: SECRET },
+    };
+    const out = redact(input) as {
+      usage: Record<string, unknown>;
+      auth: Record<string, unknown>;
+    };
+    expect(out.usage.prompt_tokens).toBe(12);
+    expect(out.usage.completion_tokens).toBe(34);
+    expect(out.usage.total_tokens).toBe(46);
+    expect(out.usage.max_tokens).toBe(128);
+    expect(out.auth.access_token).toBe(DEFAULT_PLACEHOLDER);
+    expect(JSON.stringify(out)).not.toContain(SECRET);
+  });
+});
+
+describe('DAG shared subtrees are fully walked, not placeholdered (finding #5)', () => {
+  test('same object referenced from two branches stays deep-equal with no placeholder', () => {
+    const shared = { inner: { name: 'ok', apiKey: SECRET } };
+    const input = { a: shared, b: shared };
+    const out = redact(input) as {
+      a: Record<string, unknown>;
+      b: Record<string, unknown>;
+    };
+    expect(out.a).toEqual(out.b);
+    expect((out.a.inner as Record<string, unknown>).apiKey).toBe(
+      DEFAULT_PLACEHOLDER,
+    );
+    expect((out.b.inner as Record<string, unknown>).apiKey).toBe(
+      DEFAULT_PLACEHOLDER,
+    );
+    expect(JSON.stringify(out)).not.toContain(SECRET);
+    expect((out.a.inner as Record<string, unknown>).name).toBe('ok');
+    expect((out.b.inner as Record<string, unknown>).name).toBe('ok');
+  });
+
+  test('shared array referenced from two branches is fully walked', () => {
+    const shared = [{ email: EMAIL }];
+    const input = { first: shared, second: shared };
+    const out = redact(input) as {
+      first: Array<Record<string, unknown>>;
+      second: Array<Record<string, unknown>>;
+    };
+    expect(out.first).toEqual(out.second);
+    expect(out.first[0].email).toBe(DEFAULT_PLACEHOLDER);
+    expect(out.second[0].email).toBe(DEFAULT_PLACEHOLDER);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // masking-idempotent
 // ---------------------------------------------------------------------------
 

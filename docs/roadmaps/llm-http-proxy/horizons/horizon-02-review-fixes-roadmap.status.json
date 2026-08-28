@@ -1,0 +1,218 @@
+{
+  "roadmapFile": "docs/roadmaps/llm-http-proxy/horizons/horizon-02-review-fixes-roadmap.json",
+  "roadmapTask": "Horizon 2 of the llm-http-proxy project (horizon 1 shipped the standalone package: scaffold, interceptor-core, provider-parser, payload-redaction, pluggable-logger). This horizon fixes the seven correctness code-review findings on the package (#1 derived-URL scheme, #2 token redaction, #3 emission-path crash guard, #4 reflectCall encoding, #5 redaction-walk DAG, #6 double-emit, #7 multibyte chunk buffering), each with a failing-before/passing-after regression test in the existing Jest *.test.ts files, keeping pnpm lint / typecheck / test / build green at package and repo-root level with no public API change.",
+  "createdAt": "2026-08-28T00:00:00.000Z",
+  "updatedAt": "2026-08-28T16:05:04.273Z",
+  "phases": [
+    {
+      "phaseId": "fix-redaction-walk-key-matching-and-dag-traversal",
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-28T15:20:29.820Z",
+      "completedAt": "2026-08-28T15:34:00.608Z",
+      "gateRun": "package: npx tsc -p tsconfig.json --noEmit && npx eslint \"src/**/*.ts\" && npx jest && npm run build; root: pnpm build (nest build) && pnpm test (jest)",
+      "gradeResult": {
+        "phaseId": "fix-redaction-walk-key-matching-and-dag-traversal",
+        "dimensionScores": [
+          {
+            "dimensionId": "token-accounting-fields-survive-redaction",
+            "score": 10,
+            "pass": true,
+            "evidence": "bare token removed; regression test asserts 12/34/46/128 retained, access_token redacted"
+          },
+          {
+            "dimensionId": "sensitive-token-keys-still-redacted",
+            "score": 8,
+            "pass": true,
+            "evidence": "explicit *Token/*_token enumerated; access_token nested asserted; minor: no explicit refresh_token assertion"
+          },
+          {
+            "dimensionId": "dag-shared-subtree-preserved",
+            "score": 10,
+            "pass": true,
+            "evidence": "seen add-before/delete-after in both branches; shared obj+array tests pass"
+          },
+          {
+            "dimensionId": "true-cycles-still-broken-and-idempotent",
+            "score": 9,
+            "pass": true,
+            "evidence": "existing cycle/idempotency/non-mutation tests green; minor: no mutual-cycle fixture"
+          },
+          {
+            "dimensionId": "regression-tests-fail-before-pass-after",
+            "score": 10,
+            "pass": true,
+            "evidence": "revert-demonstrated: exactly 3 new tests fail pre-fix"
+          },
+          {
+            "dimensionId": "gates-green",
+            "score": 9,
+            "pass": true,
+            "evidence": "package+root lint/typecheck/test/build all green; baseline tsconfig repair recorded"
+          }
+        ],
+        "overallPass": true
+      },
+      "notes": "Baseline repair: tsconfig types node+j jest (commit 1 hid jest globals). tsconfig.json change is prerequisite for gates-green."
+    },
+    {
+      "phaseId": "fix-derived-url-scheme",
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-28T15:34:04.724Z",
+      "completedAt": "2026-08-28T15:37:04.884Z",
+      "gateRun": "package: tsc --noEmit && eslint && jest (84/84) && build; root: nest build && jest",
+      "gradeResult": {
+        "phaseId": "fix-derived-url-scheme",
+        "dimensionScores": [
+          {
+            "dimensionId": "https-scheme-derivation",
+            "score": 10,
+            "pass": true,
+            "evidence": "resolveScheme reads protocol->agent->socket encrypted; call site passes scheme; deriveUrl signature unchanged"
+          },
+          {
+            "dimensionId": "https-url-regression-and-http-still-green",
+            "score": 10,
+            "pass": true,
+            "evidence": "fake-req https test fails-before/passes-after; plain-http test unmodified"
+          },
+          {
+            "dimensionId": "gates-green",
+            "score": 10,
+            "pass": true,
+            "evidence": "package+root all green"
+          }
+        ],
+        "overallPass": true
+      }
+    },
+    {
+      "phaseId": "fix-request-reflection-call-forwarding",
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-28T15:37:04.885Z",
+      "completedAt": "2026-08-28T15:46:48.350Z",
+      "gateRun": "package: tsc --noEmit && eslint && jest (85/85) && build; root: nest build && jest",
+      "gradeResult": {
+        "phaseId": "fix-request-reflection-call-forwarding",
+        "dimensionScores": [
+          {
+            "dimensionId": "pristine-original-forwarding",
+            "score": 10,
+            "pass": true,
+            "evidence": "reflectCall now forwards full args via original.apply(receiver,args); encoding never dropped"
+          },
+          {
+            "dimensionId": "encoding-arg-regression-test",
+            "score": 10,
+            "pass": true,
+            "evidence": "spy-on-pristine test asserts Buffer,base64,same-cb; fails pre-fix (Received: undefined), passes after"
+          },
+          {
+            "dimensionId": "gates-green",
+            "score": 10,
+            "pass": true,
+            "evidence": "package+root all green; no new disables/casts"
+          }
+        ],
+        "overallPass": true
+      }
+    },
+    {
+      "phaseId": "harden-emission-path-against-crash-and-double-emit",
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-28T15:46:48.351Z",
+      "completedAt": "2026-08-28T15:54:06.058Z",
+      "gateRun": "package: tsc --noEmit && eslint && jest (87/87) && build; root: nest build && jest",
+      "gradeResult": {
+        "phaseId": "harden-emission-path-against-crash-and-double-emit",
+        "dimensionScores": [
+          {
+            "dimensionId": "exactly-once-emission-across-response-then-error",
+            "score": 8,
+            "pass": true,
+            "evidence": "emitted guard set before schedule; response+end+error test asserts 1 entry; reverse-order not explicitly tested (minor)"
+          },
+          {
+            "dimensionId": "emission-path-cannot-crash-process",
+            "score": 9,
+            "pass": true,
+            "evidence": "try/catch around emitLogEntry in setImmediate; throwing parser test passes; fail-before showed UNCAUGHT EXCEPTION ESCAPED"
+          },
+          {
+            "dimensionId": "guard-preserves-legitimate-first-emission",
+            "score": 9,
+            "pass": true,
+            "evidence": "first emission and skip paths green via existing tests"
+          },
+          {
+            "dimensionId": "regression-tests-fail-before-pass-after-deterministic",
+            "score": 9,
+            "pass": true,
+            "evidence": "fail-before proven both; setImmediate flush; fake req/res; deterministic"
+          },
+          {
+            "dimensionId": "existing-suite-and-toolchain-stay-green",
+            "score": 9,
+            "pass": true,
+            "evidence": "install-twice and refused-connection unmodified+green; no new disables; both levels green"
+          }
+        ],
+        "overallPass": true
+      },
+      "notes": "Minors accepted as debt: no explicit error-before-end order test; crash test asserts absence of entry rather than a crash marker."
+    },
+    {
+      "phaseId": "buffer-raw-body-chunks-before-utf8-decode",
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-28T15:54:06.059Z",
+      "completedAt": "2026-08-28T16:05:04.273Z",
+      "gateRun": "package: tsc --noEmit && eslint && jest (89/89) && build; root: nest build && jest",
+      "gradeResult": {
+        "phaseId": "buffer-raw-body-chunks-before-utf8-decode",
+        "dimensionScores": [
+          {
+            "dimensionId": "multibyte-boundary-roundtrip",
+            "score": 10,
+            "pass": true,
+            "evidence": "Buffer[] chunks, single concat+decode; response split mid-2-byte char round-trips"
+          },
+          {
+            "dimensionId": "request-and-response-both-fixed",
+            "score": 10,
+            "pass": true,
+            "evidence": "both paths Buffer[] + single decode; both directions tested"
+          },
+          {
+            "dimensionId": "heterogeneous-chunk-inputs-handled",
+            "score": 10,
+            "pass": true,
+            "evidence": "string via Buffer.from(chunk,encoding); objects/primitives coerced; no throw"
+          },
+          {
+            "dimensionId": "no-new-dependency-builtins-only",
+            "score": 9,
+            "pass": true,
+            "evidence": "builtins only; package.json dependencies still empty"
+          },
+          {
+            "dimensionId": "regression-test-splits-multibyte-across-writes",
+            "score": 10,
+            "pass": true,
+            "evidence": "split verified mid-code-point; fail-before shows h����llo"
+          },
+          {
+            "dimensionId": "gates-stay-green",
+            "score": 10,
+            "pass": true,
+            "evidence": "package+root all green; Buffer[] typed; no new disables"
+          }
+        ],
+        "overallPass": true
+      }
+    }
+  ]
+}
