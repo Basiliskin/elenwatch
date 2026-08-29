@@ -1,0 +1,114 @@
+{
+  "roadmapFile": "docs/roadmaps/llm-http-proxy/horizons/horizon-05-benchmark-execution-decisions-roadmap.json",
+  "roadmapTask": "Horizon 5 of the llm-http-proxy project: execute the now-signed-off latency benchmark (the horizon-4 decisions.md sign-off records the concrete method and budget anchors p50 <1ms / p99 <2% added latency) and resolve the two pure-decision blockers that gate whole deferred success bars \u2014 package identity (name/version/license, unblocks package-identity-and-publish) and the OTEL peer-dep posture (unblocks the OTEL span-exporter demo). No new feature code beyond what the benchmark harness requires; the benchmark harness must run under the existing jest configs or as a standalone script since *.bench.ts is picked up by neither jest config. User-scoped per the next-horizon brief: benchmark execution + the two decisions, roughly 3-5 phases.",
+  "createdAt": "2026-08-28T00:00:00.000Z",
+  "updatedAt": "2026-08-29T17:00:00.000Z",
+  "phases": [
+    {
+      "phaseId": "add-opt-in-latency-benchmark-spec",
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-28T00:00:00.000Z",
+      "completedAt": "2026-08-28T00:00:00.000Z",
+      "gateRun": "cd packages/llm-http-proxy && (npm run typecheck; npm run lint; npm test; npm run build) && RUN_BENCH=1 npx jest src/benchmark.test.ts --runInBand",
+      "gradeResult": {
+        "phaseId": "add-opt-in-latency-benchmark-spec",
+        "dimensionScores": [
+          {
+            "dimensionId": "opt-in-gating",
+            "score": 9,
+            "pass": true,
+            "evidence": "Whole suite wrapped as if(RUN_BENCH) describe else describe.skip; npm test reports 1 suite/2 tests skipped, 124 passed, 1.4s exit 0; RUN_BENCH run executes tests and exits non-zero only because the request p99 anchor FAils (intended loud label per budget-anchor-compliance)."
+          },
+          {
+            "dimensionId": "measurement-method-fidelity",
+            "score": 10,
+            "pass": true,
+            "evidence": "Single interleaved loop over one 127.0.0.1 server: 1000 warmup + 10000 measured; process.hrtime.bigint everywhere; no Date.now."
+          },
+          {
+            "dimensionId": "request-path-measurement",
+            "score": 10,
+            "pass": true,
+            "evidence": "startServer on 127.0.0.1 + real http.request; intercepted samples install Interceptor with requestTransform; added latency = intercepted minus baseline per iteration."
+          },
+          {
+            "dimensionId": "response-data-path-measurement",
+            "score": 10,
+            "pass": true,
+            "evidence": "fakeReq EventEmitter + emit('data') loop; both buffered and streaming (text/event-stream) configs timed per event; self-contained try/finally."
+          },
+          {
+            "dimensionId": "budget-anchor-compliance",
+            "score": 10,
+            "pass": true,
+            "evidence": "Full method executed; printed request added p50 0.053ms / p99 0.179ms (177.64% of own baseline) + response-data buffered 0.0005 vs streaming 0.0292ms; p99 FAILed loudly, numbers committed, no retry/fallback/skip."
+          },
+          {
+            "dimensionId": "scope-containment-gates-green",
+            "score": 10,
+            "pass": true,
+            "evidence": "Only benchmark.test.ts added; imports existing exports only; typecheck/lint/build exit 0; zero diff on interceptor/options/index/jest configs."
+          }
+        ],
+        "overallPass": true
+      },
+      "notes": "Budget verdict honest: request p50 PASSes (<1ms), request p99 FAILs (177% of baseline p99) \u2014 flows to run-benchmark-and-commit-results as the recorded miss + deferred latency-regression remediation. describe.skipIf absent from @types/jest 29; used if(RUN_BENCH) describe else describe.skip. Compensation known: delete src/benchmark.test.ts restores surface."
+    },
+    {
+      "phaseId": "run-benchmark-and-commit-results",
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-29T00:00:00.000Z",
+      "completedAt": "2026-08-29T00:00:00.000Z",
+      "gateRun": "cd packages/llm-http-proxy && npm run build && RUN_BENCH=1 npx jest src/benchmark.test.ts --runInBand (recorded run + clean re-run); gates: package typecheck/lint/build + npm test (124 passed, bench skipped) + root nest build/jest (5 passed)/lint",
+      "gradeResult": {
+        "phaseId": "run-benchmark-and-commit-results",
+        "dimensionScores": [
+          {
+            "dimensionId": "budget-verdicts-per-anchor",
+            "score": 10,
+            "pass": true,
+            "evidence": "Report records raw numbers per anchor: request added p50 0.060ms (PASS <1ms), added p99 0.496ms = 173.88% of own baseline (FAIL >2%), response-data buffered 0.000541ms vs streaming 0.032083ms/event, streaming delta 31.542us; every verdict recomputable from decisions.md line 11 anchors."
+          },
+          {
+            "dimensionId": "fresh-build-attribution",
+            "score": 10,
+            "pass": true,
+            "evidence": "Report pins commit SHA 7c6e0d9, names hardware (Apple M1 Max, macOS 26.5.2, Node v22.14.0); dist rebuilt immediately before the run (mtime 2026-08-29T16:40:38Z > commit time); phase diff touches only docs + benchmark-results.md."
+          },
+          {
+            "dimensionId": "method-fidelity-to-signoff",
+            "score": 10,
+            "pass": true,
+            "evidence": "Method section documents 1000 warmup/10000 measured, interleaved baseline-vs-intercepted single loop, process.hrtime.bigint clocks, both measurement points; benchmark.test.ts byte-identical between phase commit and parent; hardware-pinning rule applied and stated."
+          },
+          {
+            "dimensionId": "clean-rerun-reproducibility",
+            "score": 10,
+            "pass": true,
+            "evidence": "Clean re-run from rebuilt dist reproduced numbers within 2x (p50 0.055ms vs 0.060ms, p99 114.72% vs 173.88% of baseline, response-data 28.792us vs 31.542us added/event) and identical verdicts (p50 PASS, p99 FAIL); no hang, no 'no tests'."
+          },
+          {
+            "dimensionId": "default-suite-scope-guard",
+            "score": 10,
+            "pass": true,
+            "evidence": "Default npm test completes in seconds with suite skipped (124 passed, 2 skipped); package lint/typecheck/build green; root nest build + jest 5/5 green against freshly rebuilt dist; phase diff touches only docs/ (benchmark-results.md), no src changes; compensation is a doc delete."
+          }
+        ],
+        "overallPass": true
+      },
+      "notes": "Compensation known: the phase's deliverable is docs-only (benchmark-results.md), deleting the file fully reverts the phase. Honest recorded miss: request-path p99 FAIL at 173.88% of baseline p99 (anchor <2%); p50 PASS 0.060ms; miss dominated by interleaved install/restore churn per run; latency-regression remediation deferred per roadmap. Evidence already appended to discoveries.md and blockers.md (line 16 resolved by execution)."
+    },
+    {
+      "phaseId": "decide-package-identity",
+      "status": "not-started",
+      "attempts": 0
+    },
+    {
+      "phaseId": "decide-otel-peer-dependency-posture",
+      "status": "not-started",
+      "attempts": 0
+    }
+  ]
+}
