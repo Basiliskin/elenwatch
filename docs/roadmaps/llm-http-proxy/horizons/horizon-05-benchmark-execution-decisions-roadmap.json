@@ -1,0 +1,622 @@
+{
+  "task": "Horizon 5 of the llm-http-proxy project: execute the now-signed-off latency benchmark (the horizon-4 decisions.md sign-off records the concrete method and budget anchors p50 <1ms / p99 <2% added latency) and resolve the two pure-decision blockers that gate whole deferred success bars \u2014 package identity (name/version/license, unblocks package-identity-and-publish) and the OTEL peer-dep posture (unblocks the OTEL span-exporter demo). No new feature code beyond what the benchmark harness requires; the benchmark harness must run under the existing jest configs or as a standalone script since *.bench.ts is picked up by neither jest config. User-scoped per the next-horizon brief: benchmark execution + the two decisions, roughly 3-5 phases.",
+  "analysis": {
+    "objective": "Execute the signed-off latency benchmark against the recorded method and budget anchors (p50 <1ms / p99 <2% added latency, incl. request-path transform and response-data-path streaming cost) and resolve the two pure-decision blockers in decisions.md \u2014 package identity (name/version/license) and the OTEL peer-dep posture \u2014 that gate the deferred publish-verification and OTEL-demo success bars, with no feature code beyond the benchmark harness.",
+    "successDefinition": "(1) A latency benchmark harness (a standalone script or a jest-compat *.test.ts/*.spec.ts spec \u2014 a *.bench.ts file matches neither jest config, so it would silently not run) executes the binding signed-off method: interleaved baseline-vs-intercepted runs over the real patched ClientRequest path, 1000 warmup + 10000 measured iterations, process.hrtime.bigint/perf_hooks clocks, measuring both named measurement points \u2014 the request path (shouldCapture/wrappers/requestTransform) and the response-data path (appendChunk/per-event parse+count) \u2014 and records the p50/p99 added-latency numbers for buffered non-streaming interception (incl. requestTransform work) against the anchors p50 <1ms / p99 <2%, with the streaming response-data-path per-event cost visible per the methodology, and the recorded numbers are committed, pass or fail; (2) decisions.md gains the two dated decision records \u2014 package identity (name/version/license, incl. whether streaming support is a same-version additive surface or a version bump) closing blockers.md line 2, and the OTEL peer-dep posture (@opentelemetry/* optional/peer activation) \u2014 each naming the deferred bar it unblocks (package-identity-and-publish; OTEL span-exporter demo); (3) no feature code beyond the bench harness, and the two-level gate is green (package tsc/eslint/jest/build with dist rebuilt, then root build/jest/lint).",
+    "assumptions": [
+      "The decisions.md latency sign-off is binding and complete (harness, hardware rule, warmup 1000, total 10000 iterations, clocks, measurement points incl. request and response-data paths; budget p50 <1ms / p99 <2% incl. requestTransform work) \u2014 this horizon executes it, never re-derives it.",
+      "Because *.bench.ts is matched by neither jest config, the harness must be a standalone script or a jest-compat *.test.ts/*.spec.ts; --passWithNoTests means a skipped spec still passes gates, so 'ran and recorded' must be provable, not assumed from a green run.",
+      "The methodology's response-data-path measurement point requires the harness to measure the streaming per-event parse+count cost on that path (buffered vs streaming comparability), not just the buffered path.",
+      "The on-disk package identity (name llm-http-proxy, version 0.2.0, license MIT with the VERSION marker in sync) is the candidate the package-identity decision pins; the streaming-additive vs 0.3.0-bump question is part of that decision.",
+      "Pure-decision blockers are resolved by decisions.md text entries only \u2014 no code, no dependency install \u2014 and the deferred bars they unblock (publish-verification, OTEL demo) stay deferred.",
+      "The package is consumed by the root via link:, so any run of root gates or the bench harness requires a package dist rebuild first or it measures stale code.",
+      "A budget miss recorded honestly is a valid outcome that triggers follow-up work, not a reason to re-open the signed-off numbers."
+    ],
+    "risks": [
+      "Noise/stability: p50/p99 on a macOS dev box under JIT/GC can wobble; a recorded miss may be environmental rather than a real regression, and the harness must follow the hardware-pinning rule so the miss is attributable.",
+      "Harness silently not running: a *.bench.ts file matches neither jest config and --passWithNoTests lets a skipped spec pass \u2014 if the harness does not prove it ran (recorded numbers committed), the benchmark phase is a no-op dressed as success.",
+      "Stale dist: the root consumes the package via link:, so a harness or root-gate run against an unrebuilt dist measures pre-horizon code.",
+      "Deviation/gaming of the signed-off method: changing warmup/iteration counts or dropping a measurement point to make the numbers pass violates the binding horizon-4 decision.",
+      "Adjacent-question scope creep: package identity touches the unresolved semver-freeze blocker (blockers.md line 3) and OTEL posture could pull in dependency install/activation \u2014 both must stay inside a decisions.md line.",
+      "A budget miss on the response-data path signals a genuine streaming regression (per-event parse+count cost); remediating it is follow-up, and doing it here would bleed this horizon's scope."
+    ],
+    "outOfScope": [
+      "Building the OTEL span exporter demo or installing/activating @opentelemetry/* deps \u2014 the demo stays blocked until this horizon records the peer-dep posture decision only.",
+      "Publish verification / npm publish dry-run \u2014 gated on the package-identity decision; the deferred package-identity-and-publish bar is unblocked, not executed.",
+      "Fixing latency that misses the budget \u2014 the horizon records numbers against the signed-off method; remediation of a regression is a later horizon's work.",
+      "Changing either jest config to pick up *.bench.ts \u2014 the brief requires the harness to run under existing configs or as a standalone script; config changes are out of scope.",
+      "Re-opening the horizon-4 signed-off methodology or budget numbers \u2014 binding decision; this horizon executes against it.",
+      "Feature code beyond the benchmark harness (interceptor, event-stream-parser, redaction, transformers, options) \u2014 the task explicitly forbids it.",
+      "Streaming residuals: cross-event redaction continuity, caller-visible stream replay, non-SSE streaming formats \u2014 named residuals, not re-scoped per the user's selected scope."
+    ],
+    "domainShape": "technical",
+    "domainShapeReason": "The objective is microbenchmark/measurement machinery plus package-manifest and peer-dependency config decisions for a shipped npm package \u2014 no business entities, rules, or workflows a domain expert would recognize \u2014 and decisions.md line 1 already pins llm-http-proxy's domain-shape-fit as 'technical' (binding).",
+    "ubiquitousLanguage": [
+      {
+        "term": "latency bench harness",
+        "meaning": "the standalone script or jest-compat *.test.ts/*.spec.ts spec that runs the signed-off interleaved baseline/intercepted measurement over the real patched ClientRequest path and commits p50/p99 numbers"
+      },
+      {
+        "term": "added-latency budget",
+        "meaning": "the binding signed-off anchors p50 <1ms / p99 <2% for buffered non-streaming interception, incl. requestTransform work, that the recorded results are judged against"
+      },
+      {
+        "term": "request path",
+        "meaning": "the named measurement point covering shouldCapture/wrappers/requestTransform work on the way out"
+      },
+      {
+        "term": "response-data path",
+        "meaning": "the named measurement point covering appendChunk/per-event parse+count work on every response 'data' event, where the streaming rewire's cost must be visible"
+      },
+      {
+        "term": "package identity",
+        "meaning": "the pure-decision blocker on name/version/license, resolved as a decisions.md record and unblocking package-identity-and-publish"
+      },
+      {
+        "term": "OTEL peer-dep posture",
+        "meaning": "the pure-decision blocker on optional @opentelemetry/* activation, resolved as a decisions.md record and unblocking the OTEL span-exporter demo"
+      },
+      {
+        "term": "decision record",
+        "meaning": "a dated decisions.md entry \u2014 the only deliverable allowed for the two pure-decision blockers; a text change, not code"
+      }
+    ]
+  },
+  "discoveryFindings": [
+    {
+      "area": "benchmark-methodology-signoff",
+      "finding": "decisions.md line 11 records the binding sign-off: harness = interleaved baseline-vs-intercepted runs over the real patched ClientRequest path, hardware pinning rule stated, warmup 1000 iters, total 10000 iters, clocks = process.hrtime.bigint and perf_hooks, measurement points = request path (shouldCapture/wrappers/transform incl. requestTransform+Content-Length) AND response-data path (appendChunk/parse per 'data' event), and budget anchors p50 <1ms / p99 <2% added latency for buffered non-streaming interception. Horizon-04 roadmap phase latency-benchmark-methodology-signoff graded 10/10 and blockers.md line 3 is marked resolved (pointer to that decision).",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/docs/roadmaps/llm-http-proxy/decisions.md",
+      "implication": "The harness must faithfully implement exactly these pinned numbers/method and measure BOTH named measurement points; the streaming response-data-path cost (parser.feed per 'data' event) must be visible for comparability, and a recorded budget miss is a valid p50>=1ms or p99>=2% outcome \u2014 the plan should commit numbers as pass/fail against these anchors, not re-derive the method."
+    },
+    {
+      "area": "jest-setup",
+      "finding": "No jest.config.js exists; package jest config is inline in package.json (rootDir '.', ts-jest transform with tsconfig.json, testEnvironment node). testRegex is `(/__tests__/.*|(\\.|/)(test|spec))\\.ts$`, so a spec named benchmark.test.ts WOULD be picked up by the package config, while any *.bench.ts matches neither config (root config: testRegex `.*\\.spec\\.ts$`, rootDir src). Package 'test' script is `jest --passWithNoTests`, so an un-matched/skipped bench file still gates green.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package.json",
+      "implication": "Name the harness benchmark.test.ts if it must run under package jest in-gate, or ship it as a standalone script; 'ran and recorded' must be proven by a committed numbers artifact since --passWithNoTests hides a silent no-op. Changing either jest config is out of scope."
+    },
+    {
+      "area": "test-tsconfig-and-runner",
+      "finding": "There is no separate test tsconfig. Base tsconfig.json (module commonjs, types ['node','jest'], includes src/**/*.ts) serves ts-jest AND `npm run typecheck`; build configs tsconfig.cjs.json/tsconfig.esm.json extend it and `exclude: [\"src/**/*.test.ts\"]`. ts-jest is a package devDep. ts-node exists only at the ROOT (root devDependencies), not in package devDependencies.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/tsconfig.json",
+      "implication": "A standalone .ts bench script cannot rely on ts-node as a package devDep \u2014 it must be plain .js/.mjs, compiled-then-run via the existing tsc build, or shipped as a jest-compat benchmark.test.ts that ts-jest already handles. No new test tsconfig needed."
+    },
+    {
+      "area": "test-harness-patterns-to-reuse",
+      "finding": "interceptor.test.ts provides the exact reusable harness: startServer() (lines 38-72) boots a real http server on 127.0.0.1 with a canned-body handler; withEntries() (75-91) constructs an Interceptor with a collecting logger, installs, runs, flushes via TWO `await new Promise(r => setImmediate(r))` (lines 87-88) and restores; post() (94-119) fires a real http.request; postWithLength() at line 1039; fakeReq() (559-567) builds an EventEmitter cast to ClientRequest with hostname/path/protocol/getHeader, driven by emit('response'|'data'|'end') plus flush() (569-571). Restore happens in finally-style after assert.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/interceptor.test.ts",
+      "implication": "The benchmark harness should clone the startServer+post+withEntries shape for the interleaved baseline/intercepted runs over the same client/server, and can use fakeReq+emit('data') for the isolated response-data-path measurement; the two-setImmediate flush is the emission-wait idiom the signed-off method implicitly relies on."
+    },
+    {
+      "area": "interceptor-public-API-and-patch-surface",
+      "finding": "interceptor.ts exports class Interceptor with install()/restore() (prototype patch of http.ClientRequest.write/end/on, singleton-guarded), attachCapture(req, callerTrace?) public, isInstalled getter; exported helpers: shouldCapture(req, providers), deriveUrl, captureCallerTrace, isSseResponse, probeSseShape; re-exports defaultEstimateInputTokens/defaultExtractOutputTokens. requestTransform runs at the terminal write/end via applyRequestTransform (interceptor.ts:328-340), Content-Length only rewritten when header exists; appendChunk runs per 'data' event on the buffered path (520-522) and parser.feed per 'data' on SSE (580-582); kNoCapture negative cache short-circuits capture decisions; completeCapture's exactly-once emission is deferred via setImmediate (604-624).",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/interceptor.ts",
+      "implication": "The bench measures the real patched path through write/end wrappers (request path: shouldCapture+attachCapture+appendChunk+applyRequestTransform) and the 'response'/'data' handlers (response-data path: appendChunk/parser.feed+per-event parse+count); install()/restore() bracket each intercepted run, and the bench can import internals straight from src/interceptor as tests already do."
+    },
+    {
+      "area": "package-identity",
+      "finding": "package.json: name llm-http-proxy, version 0.2.0, license MIT; index.ts:32 `export const VERSION = '0.2.0'` \u2014 perfectly in sync. LICENSE file EXISTS in package dir (MIT, 'Copyright (c) 2026'). files array = [dist, README.md, LICENSE] but NO README.md exists in the package directory (only root README.md). No publishConfig and no private flag (package is publishable as-is); author is empty string. Root consumer app.module.ts imports VERSION as LLM_HTTP_PROXY_VERSION and providers array from the package. Blockers.md line 2 (package name/version/license) is still OPEN.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package.json",
+      "implication": "The package-identity decision pins the on-disk candidate (llm-http-proxy@0.2.0 MIT, LICENSE present); the open sub-question is whether streaming/OTEL-posture additions stay same-version additive or force a 0.3.0 bump in both package.json and the index.ts VERSION const; a missing package README.md (referenced by files[]) should be noted as publish-hygiene debt the decision record can acknowledge."
+    },
+    {
+      "area": "otel-dependency-state",
+      "finding": "Zero @opentelemetry/opentelemetry anywhere: package dependencies is empty {} with no peerDependencies/optionalDependencies fields at all, root package.json has no OTEL dep either, and src contains only the words 'OTEL' in doc comments (index.ts:5, logger.ts:4, logger.test.ts:4) where the Logger seam is explicitly the future span-exporter hook.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package.json",
+      "implication": "The OTEL peer-dep posture is a pure text decision with nothing to reconcile in code: there is no optionalDependencies/peerDependencies scaffold yet, so the decision must name the activation mechanism (optional @opentelemetry/* activation via the Logger seam, per vision.md) without installing any dependency this horizon."
+    },
+    {
+      "area": "root-consumption-and-dist-rebuild",
+      "finding": "Root package.json depends on `\"llm-http-proxy\": \"link:packages/llm-http-proxy\"` and runs `nest build` for its build; root src/app.module.ts imports Interceptor/consoleLogger/LlmLogEntry/etc. from 'llm-http-proxy', resolving through the link to dist/cjs via exports. dist/ is gitignored in BOTH the root .gitignore (/dist) and package .gitignore (dist/) \u2014 a built dist is never committed. Root jest only matches *.spec.ts (rootDir src); package test count is now 124 (per horizon-04 status evidence; state.md confirms).",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/package.json",
+      "implication": "Any root-gate or bench run against the package measures stale code unless the package dist is rebuilt first (npm run build) \u2014 the plan must sequence 'rebuild dist' before the benchmark run and root jest; the recorded benchmark numbers must be tied to the same rebuilt dist so they're attributable."
+    },
+    {
+      "area": "benchmark-infrastructure-absence",
+      "finding": "There is no bench script anywhere, no src/__fixtures__/ directory, no *.bench file, and no hrtime/performance.now/perf_hooks code in packages/llm-http-proxy (grep-confirmed). Package scripts are only clean/prebuild/build/lint/test/test:coverage/typecheck.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package.json",
+      "implication": "The benchmark harness is fully greenfield \u2014 no existing perf/bench convention, fixture dir, or script to hook into; the harness (script or benchmark.test.ts) plus a committed numbers record are the only new code the horizon ships."
+    },
+    {
+      "area": "postbuild-and-build-output",
+      "finding": "scripts/postbuild.mjs writes {type:'module'} into dist/esm/package.json and {type:'commonjs'} into dist/cjs/package.json, then verifies every ESM .js under dist/esm is a real module. Build = `tsc -p tsconfig.cjs.json && tsc -p tsconfig.esm.json && npm run postbuild`; both tsconfigs set declaration+declarationMap true, so the build emits dual ESM/CJS plus .d.ts/.d.ts.map; package exports/types point at dist/cjs/index.d.ts, import dist/esm/index.js, require dist/cjs/index.js.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/scripts/postbuild.mjs",
+      "implication": "The dist rebuild for the two-level gate is the full dual-format emit incl. declarations; a standalone bench script can import the built package (dist/esm or dist/cjs) or the TS source via ts-jest \u2014 either way the measured code must be the freshly rebuilt dist for root-link consumption to see it."
+    },
+    {
+      "area": "blockers-tracked-gates",
+      "finding": "blockers.md line 3 (latency budget/methodology) is closed by the horizon-4 sign-off, but line 2 (package name/version/license) remains OPEN, and line 4 (LlmLogEntry/LlmLoggingOptions semver-freeze) is the adjacent open question the package-identity decision's version-bump sub-question touches. vision.md line 10 still literally lists the deferred bar 'no work beyond body capture on the request path' \u2014 superseded by the decisions.md sign-off but not reworded in the deferred list.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/docs/roadmaps/llm-http-proxy/blockers.md",
+      "implication": "The horizon's closure work for the two pure decisions is decisions.md entry + blockers.md line 2 resolved/closed (and the semver-freeze question line 4 must be answered inside the package-identity record, naming which deferred bar it unblocks), with vision.md's obsolete phrase cross-referenced as superseded \u2014 all doc-only, no code."
+    }
+  ],
+  "requiredMaterials": [
+    {
+      "name": "npm registry name availability for 'llm-http-proxy'",
+      "kind": "api",
+      "whyNeeded": "The package-identity decision must pin a publishable name/version/license to close blockers.md line 2 and unblock the deferred package-identity-and-publish bar; if 'llm-http-proxy' is already claimed on npm (or a near-collision name is live), the pinned identity is invalid and the publish bar inherits a bad decision. This is the only constituent of the identity decision that is not knowable from the repo itself.",
+      "acquisitionNote": "Query the public npm registry with `npm view llm-http-proxy` or GET https://registry.npmjs.org/llm-http-proxy; a 404/empty response confirms the name is free to publish. Public read-only API \u2014 no credential or account login required. Re-check at decision-writing time since availability is not static."
+    }
+  ],
+  "phases": [
+    {
+      "id": "add-opt-in-latency-benchmark-spec",
+      "order": 0,
+      "name": "Add latency benchmark that runs on demand",
+      "goal": "Create src/benchmark.test.ts \u2014 an opt-in jest spec that measures the signed-off p50/p99 added latency of buffered interception over the real patched ClientRequest path (request path and response-data path measurement points) while leaving the default npm test / two-level gate fast.",
+      "rationale": "decisions.md line 11 signed off the latency-benchmark method (1000 warmup + 10000 measured iterations, interleaved baseline-vs-intercepted runs, process.hrtime.bigint/perf_hooks clocks, request path + response-data path measurement points, p50 <1ms / p99 <2% anchors) but nothing implements it. The package jest config already matches *.test.ts and ts-jest is the only TypeScript runner in the package (no ts-node devDep), so an env-gated spec named benchmark.test.ts is the mechanism with the least new machinery \u2014 no standalone script, no config change. Wrapping the suite in describe.skipIf(!process.env.RUN_BENCH) keeps the default gate path running in milliseconds.",
+      "filesAffected": [
+        "packages/llm-http-proxy/src/benchmark.test.ts"
+      ],
+      "changes": [
+        "Create src/benchmark.test.ts with the whole suite wrapped in describe.skipIf(!process.env.RUN_BENCH): default `npm test` (and the two-level gate) skips it in milliseconds, while `RUN_BENCH=1 npx jest src/benchmark.test.ts` runs the full measurement \u2014 do NOT touch either jest config (out of scope).",
+        "Clone the real-patched-path harness shape from interceptor.test.ts \u2014 startServer() boots a real 127.0.0.1 http server, post() fires a real http.request, withEntries-style install()/run()/restore() \u2014 and interleave baseline (interceptor not installed) and intercepted (Interceptor installed with a requestTransform) runs over the same client/server so JIT/GC drift cancels.",
+        "Measure per the signed-off method with monotonic high-resolution clocks (process.hrtime.bigint / perf_hooks): 1000 warmup iterations then 10000 measured iterations, computing p50/p99 added latency for the request path (shouldCapture/wrappers/requestTransform) and a separate response-data-path measurement of the per-'data'-event appendChunk/parse+count cost (buffered vs streaming) using the fakeReq+emit('data') pattern.",
+        "Add no feature code beyond the harness: import only existing exports (Interceptor, shouldCapture, etc.) and leave interceptor.ts, options.ts, index.ts, and both package.json jest configs unchanged, then verify package typecheck/lint/build stay green and `npm test` still completes fast with the suite skipped."
+      ],
+      "boundedContext": "latency-benchmark execution",
+      "layer": "cross-cutting",
+      "blastRadius": "small",
+      "inputs": [
+        "decisions.md horizon-4 sign-off line (method: warmup 1000, iterations 10000, clocks, interleaved baseline, measurement points; anchors p50 <1ms / p99 <2%)",
+        "interceptor.test.ts reusable harness patterns (startServer/post/withEntries/fakeReq+emit('data'))",
+        "package.json jest testRegex (matches *.test.ts) + --passWithNoTests + ts-jest as the only TS runner",
+        "src/interceptor.ts exports and InterceptorOptions (constructor options incl. requestTransform)"
+      ],
+      "expectedResult": "src/benchmark.test.ts \u2014 the single opt-in harness spec that default `npm test` skips in milliseconds and `RUN_BENCH=1 npx jest src/benchmark.test.ts` executes as the full signed-off measurement, with gates green.",
+      "dependsOn": [],
+      "compensation": "Delete src/benchmark.test.ts to return to the pre-horizon state; the spec is opt-in so it has zero default-gate effect and rolls back trivially.",
+      "rubric": [
+        {
+          "id": "opt-in-gating",
+          "label": "Benchmark runs only on demand; default gate stays fast",
+          "ruleStatement": "The entire benchmark suite is gated behind the RUN_BENCH env var so the default npm test path skips it in milliseconds while RUN_BENCH=1 executes the full measurement.",
+          "passCriteria": [
+            "Open src/benchmark.test.ts: the whole suite is wrapped in describe.skipIf(!process.env.RUN_BENCH)(...) \u2014 grep for skipIf and RUN_BENCH and confirm no top-level test(/describe( exists beside the wrapper.",
+            "Run `npm test` in packages/llm-http-proxy: jest reports the benchmark tests as skipped (not run) and the run completes in a few seconds with exit 0.",
+            "Run `RUN_BENCH=1 npx jest src/benchmark.test.ts`: the summary shows benchmark tests actually executed (test count > 0, none skipped) and exits 0."
+          ],
+          "failureExamples": [
+            "Default `npm test` executes the 11k-iteration measurement (suite shows tests as run, not skipped, or the run takes minutes).",
+            "The gate reads a different variable than RUN_BENCH (e.g. process.env.BENCH), so setting RUN_BENCH=1 leaves the suite skipped.",
+            "A chunk of the benchmark (e.g. the response-data-path timing) sits outside the skipIf wrapper and always runs."
+          ],
+          "minScore": 9
+        },
+        {
+          "id": "measurement-method-fidelity",
+          "label": "Implements the signed-off method: 1000 warmup / 10000 measured, high-res clock, interleaved",
+          "ruleStatement": "The spec measures exactly per the recorded method: 1000 warmup then 10000 measured iterations on a monotonic high-resolution clock, with baseline and intercepted runs interleaved in one loop over the same server so JIT/GC drift cancels.",
+          "passCriteria": [
+            "Grep the file for the iteration counts: a warmup loop of 1000 iterations and a measured loop of 10000 iterations (as literals or constants bound to 1000/10000).",
+            "Grep the timing lines: samples use process.hrtime.bigint() or performance.now() from node:perf_hooks; no Date.now() appears anywhere in the measurement paths.",
+            "Read the main request-path loop: a single loop body alternates one baseline sample (no interceptor installed) and one intercepted sample (Interceptor installed) against the same 127.0.0.1 server \u2014 not two separate sequential batches."
+          ],
+          "failureExamples": [
+            "Warmup/measured counts are not 1000/10000 (e.g. 100 warmup / 1000 measured).",
+            "Timing uses Date.now() (ms wall clock), so sub-millisecond added latency and the p99 shape are unmeasurable.",
+            "Baseline iterations complete in one loop and intercepted iterations in a later loop (e.g. after server warmup), so JIT/GC state decides the difference instead of the pairing."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "request-path-measurement",
+          "label": "Request path measured over the real patched ClientRequest path with requestTransform",
+          "ruleStatement": "The request-path measurement runs through the real patched http.ClientRequest path against a live 127.0.0.1 server, with an Interceptor configured with a requestTransform installed for the intercepted samples, so shouldCapture/wrapper/transform work is what the p50/p99 reflect.",
+          "passCriteria": [
+            "The file boots a real HTTP server listening on 127.0.0.1 (mirroring startServer in interceptor.test.ts) and issues requests through real http.request calls \u2014 grep for listen/127.0.0.1/http.request.",
+            "The intercepted sample constructs `new Interceptor(...)` configured with a requestTransform callback (grep for requestTransform in the file) and calls restore() after the run.",
+            "The code computes per-iteration added latency as intercepted minus baseline (or the measurement reports the intercepted/baseline pair), so the published p50/p99 are added latency, not raw latency."
+          ],
+          "failureExamples": [
+            "The 'intercepted' run calls interceptor.attachCapture directly on a fake request instead of exercising the patched http.request path, so wrapper/transform overhead is not measured.",
+            "No requestTransform is configured, so the recorded numbers cannot be judged against an anchor that includes transform work.",
+            "There is no baseline sample in the same file, so added latency cannot be computed at all."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "response-data-path-measurement",
+          "label": "Response-data path measured separately: per-'data'-event cost, buffered vs streaming",
+          "ruleStatement": "A separate measurement point times the per-'data'-event handling cost (appendChunk/parse+count) using the fakeReq + emit('data') pattern from interceptor.test.ts, reporting the streaming rewire's added per-event cost against the buffered path.",
+          "passCriteria": [
+            "The file contains a second describe/test that builds a fake ClientRequest (an EventEmitter with hostname/path/getHeader) and drives capture by calling emit('data', chunk) in a loop \u2014 the fakeReq pattern from interceptor.test.ts.",
+            "The measurement reports a per-'data'-event cost for a buffered configuration and a per-'data'-event cost for the streaming configuration (event-stream-parser wired into the data handler), so the streaming rewire's added cost appears as its own number.",
+            "The fakeReq measurement is self-contained: it restores any installed interceptor state and closes the server in a finally-equivalent, so the request-path measurement is not contaminated."
+          ],
+          "failureExamples": [
+            "Response-data cost can only be inferred from end-to-end request time (no per-emit timing), so the streaming rewire's per-event parse+count cost is invisible.",
+            "Only the buffered configuration is timed \u2014 the streaming comparison number is missing.",
+            "The 'data'-event measurements run on a real network response instead of the deterministic fakeReq + emit('data') pattern, so noise hides sub-us per-event costs."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "budget-anchor-compliance",
+          "label": "Full signed-off method executes and commits honest PASS-or-FAIL verdicts per anchor",
+          "ruleStatement": "The phase is done when the spec EXECUTES the full signed-off method \u2014 1000 warmup + 10000 measured iterations, interleaved baseline-vs-intercepted runs, high-res clocks, both measurement points (request path and response-data path) \u2014 and commits/asserts an explicit PASS-or-FAIL verdict per anchor, judged against the binding anchors p50 <1ms / p99 <2% added latency. A recorded budget miss is a valid completed phase-0 outcome: it flows forward to phase 1's honest record and the deferred latency-regression remediation. The anchor assertion is a loud red line that labels the result, never a retry-until-green mechanism \u2014 an anchor miss must not be masked by re-running or by an \"exits 0 implies pass\" interpretation.",
+          "passCriteria": [
+            "Run `RUN_BENCH=1 npx jest src/benchmark.test.ts` and read the output: the full signed-off method executed (1000 warmup + 10000 measured iterations on a high-res clock, both measurement points) and the numbers include p50 and p99 added latency for the request path AND for the response-data path \u2014 the numbers are printed or asserted, not silently discarded.",
+            "The spec commits/asserts an explicit PASS or FAIL verdict for each anchor \u2014 request-path p50 (<1ms), request-path p99 (<2% of the run's own measured baseline p99, not a hardcoded constant), and the response-data-path bounds \u2014 where PASS requires the recorded number to satisfy the anchor and FAIL means the recorded number misses it.",
+            "A recorded miss is representable as a completed outcome: if the printed request-path p50 >= 1ms or p99 >= 2% of baseline, the output labels the verdict FAIL and the run still commits the numbers \u2014 it does not exit early, loop, or re-run until green.",
+            "The spec does not mask misses: no retry loop, no fallback to a second run, and no branch that skips the assertion when it would fail \u2014 each verdict is exactly the comparison of the committed number to the signed-off anchor."
+          ],
+          "failureExamples": [
+            "The spec passes while printing no latency numbers and no PASS/FAIL verdicts (results are computed but never committed/asserted, so the anchors are never judged).",
+            "The spec re-runs or retries until the numbers satisfy the anchors, or treats exit 0 as pass without a verdict \u2014 the anchor check becomes retry-until-green / exits-0-implies-pass.",
+            "The spec hard-fails or crashes on a recorded budget miss instead of committing the honest FAIL numbers for phase 1's record and the deferred remediation.",
+            "The response-data-path results omit the streaming configuration, so the streaming rewire cost is never judged against the anchors."
+          ],
+          "minScore": 9
+        },
+        {
+          "id": "scope-containment-gates-green",
+          "label": "Only benchmark.test.ts added; no feature code or config edits; package gates green",
+          "ruleStatement": "The phase ships exactly one new file importing only existing exports \u2014 interceptor.ts, options.ts, index.ts, and both jest configs stay byte-identical \u2014 and the package typecheck/lint/build gates pass.",
+          "passCriteria": [
+            "Run `git diff --stat` from the repo root: the only new file is packages/llm-http-proxy/src/benchmark.test.ts with zero diff on interceptor.ts, options.ts, index.ts, and both package.json jest configs (package + root).",
+            "Read the imports at the top of benchmark.test.ts: every import resolves to an export that already exists in this package's src modules (e.g. Interceptor, shouldCapture from './interceptor'); no new or modified module under src is imported.",
+            "Run `npm run typecheck`, `npm run lint`, and `npm run build` in packages/llm-http-proxy: all three exit 0."
+          ],
+          "failureExamples": [
+            "git diff shows edits to interceptor.ts, options.ts, index.ts, or a jest config (e.g. testRegex/transform changed to make the benchmark run).",
+            "The file imports a helper that didn't exist before (e.g. src/benchmark-utils.ts) or re-implements interception logic instead of importing existing exports.",
+            "Any of typecheck/lint/build exits non-zero after the file lands."
+          ],
+          "minScore": 8
+        }
+      ],
+      "healerHint": "The spec most likely passes by timing baseline and intercepted runs in two separate sequential batches with a wall clock, so the recorded numbers come from JIT/GC drift instead of the interleaved high-res method \u2014 flatten the run into one loop that samples process.hrtime.bigint() around each interleaved baseline/intercepted pair and verify the run actually executed the full signed-off method and committed an honest PASS-or-FAIL verdict per anchor. Do not re-run to make the printed p50/p99 match the anchors \u2014 a recorded budget miss is a valid completed phase outcome that flows to the phase-1 results record and the deferred latency-regression remediation."
+    },
+    {
+      "id": "run-benchmark-and-commit-results",
+      "order": 1,
+      "name": "Run benchmark and commit results",
+      "goal": "Execute the opt-in latency bench harness against a freshly rebuilt package, capture the measured p50/p99 added-latency numbers for the request path and the response-data path, judge them pass/fail against the signed-off budget anchors, and commit an attributable results report so the run is provable.",
+      "rationale": "jest runs with --passWithNoTests, so a skipped or un-matched bench file would gate green even if it never ran \u2014 a committed, dated numbers record is the only honest proof the benchmark happened. dist/ is gitignored and the root consumes the package via link:, so the recorded numbers must be attributed to a freshly rebuilt dist built from the same committed source the harness measures.",
+      "filesAffected": [
+        "packages/llm-http-proxy",
+        "docs/roadmaps/llm-http-proxy/benchmark-results.md"
+      ],
+      "changes": [
+        "Rebuild the package first (`npm run build` in packages/llm-http-proxy \u2014 dual tsc emit + postbuild) so the root's link: consumption and the recorded numbers both point at fresh dist, then run `RUN_BENCH=1 npx jest src/benchmark.test.ts --runInBand` to execute the full 1000-warmup/10000-measured measurement on the pinned machine.",
+        "Capture from the run output the request-path p50/p99 added latency (judged against the <1ms p50 / <2% p99 anchors, incl. requestTransform work) and the response-data-path per-event parse+count cost (buffered vs streaming) so the streaming cost is visible per the methodology.",
+        "Write docs/roadmaps/llm-http-proxy/benchmark-results.md recording the run date, hardware, method summary (warmup/iterations/clock source), the measured numbers per measurement point, and an explicit PASS/FAIL verdict per anchor \u2014 a recorded budget miss stays recorded honestly as a valid outcome, not a reason to edit the numbers.",
+        "Leave the harness and the signed-off method untouched: no re-derivation of iteration/warmup counts or measurement points to make numbers pass, and confirm the default `npm test` plus root gates still run fast with the suite skipped."
+      ],
+      "boundedContext": "latency-benchmark execution",
+      "layer": "cross-cutting",
+      "blastRadius": "small",
+      "inputs": [
+        "src/benchmark.test.ts (the opt-in harness from the previous phase)",
+        "decisions.md signed-off budget anchors + method (line 11)",
+        "freshly rebuilt package dist (npm run build)"
+      ],
+      "expectedResult": "docs/roadmaps/llm-http-proxy/benchmark-results.md \u2014 one committed, dated, attributable results report with request-path and response-data-path p50/p99 numbers and an explicit PASS/FAIL verdict against each signed-off anchor.",
+      "dependsOn": [
+        "add-opt-in-latency-benchmark-spec"
+      ],
+      "compensation": "None needed \u2014 a committed doc artifact; deleting benchmark-results.md fully reverts the record.",
+      "rubric": [
+        {
+          "id": "budget-verdicts-per-anchor",
+          "label": "Measured numbers and PASS/FAIL verdicts recorded per signed-off anchor",
+          "ruleStatement": "The report records numeric p50/p99 added-latency values for every signed-off measurement point \u2014 request path (p50 <1ms / p99 <2%, incl. requestTransform work) and response-data path per-event cost (buffered AND streaming) \u2014 and every PASS/FAIL verdict can be recomputed by comparing the recorded number to the signed-off anchor in decisions.md line 11.",
+          "passCriteria": [
+            "benchmark-results.md contains a numeric request-path p50 value and a numeric request-path p99 value that can be read and compared against the anchors at decisions.md line 11 (p50 <1ms, p99 <2% added latency).",
+            "The report has at least one row for the response-data-path per-event cost under buffered interception and one row under streaming interception, each with a number, so the streaming delta is visible in the file.",
+            "For every measurement row the report explicitly labels PASS or FAIL, and the label matches what a reader gets by comparing the recorded number to its anchor (a recorded p50 >= 1.0ms or p99 >= 2% must not be labeled PASS).",
+            "The recorded values appear as the harness's raw output (e.g. 'p50 0.31ms') rather than only as a rounded or rewritten figure a reader cannot verify."
+          ],
+          "failureExamples": [
+            "The report records only request-path numbers and omits the response-data-path buffered-vs-streaming rows, hiding the streaming rewire's cost.",
+            "A row labeled PASS carries a number that fails its anchor (e.g. p50 1.4ms labeled PASS).",
+            "The report gives verdicts with no numbers, so the PASS/FAIL claims cannot be checked."
+          ],
+          "minScore": 9
+        },
+        {
+          "id": "fresh-build-attribution",
+          "label": "Numbers attributable to a freshly rebuilt dist from the measured commit",
+          "ruleStatement": "The recorded numbers must be provably linked to a freshly rebuilt dist built from the same committed source the harness measured, so a later reader can reproduce the exact artifact behind the numbers.",
+          "passCriteria": [
+            "The report records the git commit SHA (or equivalent source fingerprint) of packages/llm-http-proxy that the run measured.",
+            "`git show --stat` (or `git diff --stat`) for the phase commit shows zero changes under packages/llm-http-proxy/src \u2014 the only committed change outside docs is build output (dist/ is gitignored).",
+            "The newest file under packages/llm-http-proxy/dist has a filesystem modification time newer than the recorded source commit time, proving rebuild happened before the measure run (not stale dist).",
+            "The report names the machine/hardware the run used, so the numbers carry the signed-off hardware attribution."
+          ],
+          "failureExamples": [
+            "The report has no commit SHA or source reference, so the numbers cannot be linked to any code revision.",
+            "The phase commit edits files under packages/llm-http-proxy/src, leaking feature work into the benchmark phase.",
+            "dist files all predate the recorded source commit, meaning the run measured a stale build."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "method-fidelity-to-signoff",
+          "label": "Run executed the signed-off method with the harness untouched",
+          "ruleStatement": "The run performed the exact signed-off method \u2014 same warmup count, total iteration count, clock source, and measurement order as decisions.md \u2014 and the harness itself was not modified to make the numbers pass.",
+          "passCriteria": [
+            "The report's method summary names a warmup count and a total iteration count that match the signed-off values at decisions.md line 11 exactly (1000 warmup / 10000 measured).",
+            "The report names a clock source matching decisions.md (process.hrtime.bigint or perf_hooks), not a wall-clock source.",
+            "`git diff` of packages/llm-http-proxy/src/benchmark.test.ts between the phase commit and its parent is empty \u2014 the harness is byte-identical.",
+            "The report records the hardware (or applies the signed-off hardware-pinning rule) it ran on."
+          ],
+          "failureExamples": [
+            "The report claims 2000 warmup iterations while decisions.md signed off 1000.",
+            "benchmark.test.ts shows a diff adjusting iteration counts or dropping a measurement point from the signed-off version.",
+            "The report omits both hardware and a hardware-pinning rule, breaking the attribution rule."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "clean-rerun-reproducibility",
+          "label": "Clean re-run reproduces the recorded numbers and verdicts",
+          "ruleStatement": "Re-running the harness from the recorded commit and a fresh build reproduces the recorded p50/p99 values within a tolerance and reproduces every PASS/FAIL verdict, proving the record is a repeatable measurement rather than a one-off or cherry-picked run.",
+          "passCriteria": [
+            "From packages/llm-http-proxy, `npm run build` succeeds, then `RUN_BENCH=1 npx jest src/benchmark.test.ts --runInBand` completes and prints p50/p99 output (it does not hang, crash, or report 'no tests').",
+            "The re-run's request-path p50 and p99 values are each within 2x of the values recorded in benchmark-results.md.",
+            "Every re-run PASS/FAIL verdict equals the recorded verdict \u2014 a recorded PASS must not re-run as FAIL, and vice versa."
+          ],
+          "failureExamples": [
+            "The re-run prints no numbers and jest reports zero tests ran, meaning the opt-in gate masked a skipped benchmark.",
+            "Re-run values differ from the record by an order of magnitude with no explanation in the report.",
+            "A recorded PASS flips to FAIL on the clean re-run, showing the recorded run did not reflect the committed source."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "default-suite-scope-guard",
+          "label": "Default gates stay fast/green with the benchmark skipped and no feature code shipped",
+          "ruleStatement": "The opt-in gate still works \u2014 default `npm test` and root gates stay fast and green with the benchmark suite skipped \u2014 and the phase shipped no feature code beyond the unchanged harness, so the change rolls back cleanly.",
+          "passCriteria": [
+            "From packages/llm-http-proxy, `npm test` with no RUN_BENCH env var finishes in under a minute and does not execute the benchmark spec.",
+            "`npm run lint` and `npm run typecheck` pass in packages/llm-http-proxy.",
+            "The root gate (root `npm test`/nest build) passes against the freshly rebuilt dist.",
+            "The phase commit's diff touches only docs/ and nothing under packages/llm-http-proxy/src \u2014 deleting docs/roadmaps/llm-http-proxy/benchmark-results.md fully reverts the phase."
+          ],
+          "failureExamples": [
+            "`npm test` runs the full 10000-iteration benchmark unprompted, ballooning the default gate.",
+            "The commit carries source changes unrelated to the benchmark harness.",
+            "`npm run lint`, `npm run typecheck`, or the root gate fails red."
+          ],
+          "minScore": 8
+        }
+      ],
+      "healerHint": "Most likely the run happened on stale dist or with RUN_BENCH unset (silent skip), so the committed numbers don't reproduce \u2014 rebuild first, paste the exact harness output lines into the report without editing values, and recompute every verdict directly from the decisions.md anchors."
+    },
+    {
+      "id": "decide-package-identity",
+      "order": 2,
+      "name": "Decide package name version and license",
+      "goal": "Record in decisions.md the binding package identity \u2014 name llm-http-proxy, version 0.2.0, license MIT, plus the streaming-additive vs 0.3.0-bump sub-question \u2014 and close blockers.md line 2 so the deferred package-identity-and-publish bar is unblocked.",
+      "rationale": "At planning time the npm registry returned 404 for https://registry.npmjs.org/llm-http-proxy (checked 2026-08-29), indicating the name was free to publish then; because registry availability is not static, this phase re-runs the check immediately before writing the decision record and pins the identity on the decision-time status. The on-disk manifest already pins version 0.2.0 / license MIT with the index.ts VERSION const in sync and a LICENSE file present. This pure-decision blocker is resolved by a decision record \u2014 text, not code \u2014 closing blockers.md line 2 and unblocking a whole deferred success bar.",
+      "filesAffected": [
+        "docs/roadmaps/llm-http-proxy/decisions.md",
+        "docs/roadmaps/llm-http-proxy/blockers.md"
+      ],
+      "changes": [
+        "Run the npm-registry availability check immediately before writing the decision record: `npm view llm-http-proxy` or GET https://registry.npmjs.org/llm-http-proxy, and record the ACTUAL status observed in the entry (404/empty = free / 200 = taken, incl. the actual status code) plus the date of this decision-time check \u2014 the planning-time 404 is rationale context, not the entry's evidence, since the name can be claimed between planning and decision-writing time.",
+        "Answer the semver sub-question inside the same record: streaming/responseTransform additions stay same-version additive surface on 0.2.0 (they already landed additively and VERSION is in sync), reserving a 0.3.0 bump for any future breaking change \u2014 and note the missing package README.md (referenced by package.json files[]) as publish-hygiene debt for the publish-verification bar.",
+        "Name the deferred bar this decision unblocks (package-identity-and-publish) in the entry, and close blockers.md line 2 as resolved with a pointer to the decisions.md entry; change no code and install no dependencies."
+      ],
+      "boundedContext": "package identity",
+      "layer": "infrastructure",
+      "blastRadius": "small",
+      "inputs": [
+        "npm registry availability check \u2014 re-run `npm view llm-http-proxy` / GET https://registry.npmjs.org/llm-http-proxy immediately before writing the decision record (the name was free at planning time \u2014 404 on 2026-08-29 \u2014 recorded as rationale context, not a settled input)",
+        "package.json on-disk identity (name llm-http-proxy / version 0.2.0 / license MIT, LICENSE file present)",
+        "src/index.ts VERSION const ('0.2.0')",
+        "blockers.md line 2 (open package name/version/license entry)"
+      ],
+      "expectedResult": "A decisions.md package-identity decision record with blockers.md line 2 closed \u2014 one dated decision entry, not code, naming the package-identity-and-publish bar it unblocks.",
+      "dependsOn": [],
+      "compensation": "None needed \u2014 doc-only; the record can be reworded anytime before publish.",
+      "rubric": [
+        {
+          "id": "identity-fields-pinned",
+          "label": "Binding identity is pinned in the record",
+          "ruleStatement": "The dated decisions.md entry explicitly pins name=llm-http-proxy, version=0.2.0, and license=MIT as the binding package identity.",
+          "passCriteria": [
+            "Open docs/roadmaps/llm-http-proxy/decisions.md and find the entry dated 2026-08-29 whose heading contains 'package identity'",
+            "The entry body contains the exact token 'llm-http-proxy' as the chosen name",
+            "The entry body contains the exact token '0.2.0' as the chosen version",
+            "The entry body contains the exact token 'MIT' as the chosen license"
+          ],
+          "failureExamples": [
+            "The entry pins only a name, leaving version or license unwritten",
+            "The entry uses 'TBD' or 'finalize later' for any of the three identity fields",
+            "The entry is dated but says nothing about name/version/license"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "registry-availability-fact-recorded",
+          "label": "Decision-time registry check status and date are recorded",
+          "ruleStatement": "The entry records the status and date of the decision-time registry check, which must have been run at decision-writing time \u2014 the ACTUAL status code observed (404 = free / 200 = taken) for the queried name at registry.npmjs.org and the date that check ran \u2014 as the evidence the pinned name is publishable. A 404 result is a valid recorded outcome, not a mandated one; the entry must never assert a 404 that the decision-time check did not produce.",
+          "passCriteria": [
+            "Run `npm view llm-http-proxy` (or GET https://registry.npmjs.org/llm-http-proxy) immediately before writing the entry, and the entry reflects THAT decision-time check rather than a planning-time or assumed result.",
+            "The entry records the status (404 = free / 200 = taken, plus the actual status code observed) and the date of the decision-time registry check.",
+            "The entry contains the URL 'registry.npmjs.org/llm-http-proxy' so the check is attributable."
+          ],
+          "failureExamples": [
+            "The entry claims the name is free without naming the URL or the decision-time result.",
+            "The entry hard-codes 'HTTP 404' without having run the decision-time check, or records a status inconsistent with the check that actually ran at decision-writing time.",
+            "The entry records the status but no date, so the check cannot be audited to decision-writing time."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "semver-posture-answered",
+          "label": "Semver sub-question is decided",
+          "ruleStatement": "The entry answers the streaming/responseTransform additions vs 0.3.0-bump sub-question: additions stay additive on 0.2.0, 0.3.0 is reserved for breaking changes, and the missing README.md is recorded as publish-hygiene debt.",
+          "passCriteria": [
+            "The entry states that streaming/responseTransform additions remain on 0.2.0 as additive surface",
+            "The entry states that a future breaking change would require a 0.3.0 bump",
+            "The entry mentions the missing package README.md (referenced by package.json files[]) as publish-hygiene debt"
+          ],
+          "failureExamples": [
+            "The entry punts the version question with 'defer to publish time'",
+            "The entry gives semver reasoning but omits the README.md debt that publish-verification must see"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "blocker-closed-with-pointer",
+          "label": "blockers.md line 2 is closed with a pointer",
+          "ruleStatement": "blockers.md line 2 (open package name/version/license) is marked resolved, points to the new decisions.md entry, and names the deferred bar this unlocks (package-identity-and-publish).",
+          "passCriteria": [
+            "Open docs/roadmaps/llm-http-proxy/blockers.md and line 2 is marked resolved/closed, not open",
+            "The line 2 closure points to a decisions.md entry (e.g., a dated entry reference or link)",
+            "The closure names the deferred bar 'package-identity-and-publish'"
+          ],
+          "failureExamples": [
+            "blockers.md line 2 still reads 'open' with no resolution marker",
+            "Line 2 is resolved but references an entry that does not exist in decisions.md",
+            "The closure does not name the package-identity-and-publish bar it unblocks"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "doc-only-diff",
+          "label": "Change is text-only, no code or deps",
+          "ruleStatement": "The phase lands as a documentation change: the working-tree diff touches only the two docs files and no code, manifest, or lockfile.",
+          "passCriteria": [
+            "Run 'git status' (or 'git diff --name-only') and every changed path is under docs/roadmaps/llm-http-proxy/ and is either decisions.md or blockers.md",
+            "No src/, package.json, package-lock.json, or yarn.lock file appears in the diff",
+            "No new dependency appears in any lockfile"
+          ],
+          "failureExamples": [
+            "The diff shows edits to src/index.ts or a new .ts file",
+            "package.json or a lockfile changed during the phase",
+            "A stray file (e.g., a backup or scratch script) is tracked in the diff"
+          ],
+          "minScore": 7
+        }
+      ],
+      "healerHint": "The most likely failure is that blockers.md line 2 stays 'open' (or the semver sub-question gets deferred) because the entry was written vaguely \u2014 reopen decisions.md, paste the exact three-field pin (llm-http-proxy / 0.2.0 / MIT) plus the one-line 0.3.0-bump answer, then flip line 2 to resolved with a dated pointer to that entry."
+    },
+    {
+      "id": "decide-otel-peer-dependency-posture",
+      "order": 3,
+      "name": "Decide OTEL peer dependency posture",
+      "goal": "Record in decisions.md the @opentelemetry/* activation posture \u2014 optional peer dependencies activated through the existing Logger seam only when installed \u2014 unblocking the deferred OTEL span-exporter demo without installing any dependency this horizon.",
+      "rationale": "The package has zero @opentelemetry/* presence (empty dependencies, no peerDependencies/optionalDependencies fields) and the Logger seam is already documented as the future span-exporter hook, so there is nothing to reconcile in code. This pure-decision blocker is resolved by naming the activation mechanism in a decisions.md record, which is the only thing the deferred OTEL demo needs to start.",
+      "filesAffected": [
+        "docs/roadmaps/llm-http-proxy/decisions.md"
+      ],
+      "changes": [
+        "Add a dated decisions.md entry recording the OTEL peer-dep posture: @opentelemetry/* packages are optional peer dependencies, never hard dependencies, and the future span exporter activates through the existing Logger seam (src/logger.ts, src/index.ts doc comments) only when those peer deps are present, per vision.md.",
+        "State explicitly what the decision does not do: no dependency is installed and no activation code ships this horizon \u2014 the OTEL span-exporter demo bar stays deferred and is merely unblocked.",
+        "Name the deferred bar this decision unblocks (OTEL span-exporter demo) and record it as unblocked for a later horizon; change no code and install no dependencies."
+      ],
+      "boundedContext": "OTEL peer-dep posture",
+      "layer": "cross-cutting",
+      "blastRadius": "small",
+      "inputs": [
+        "vision.md deferred OTEL span-exporter bar wording (activates only when optional @opentelemetry/* peer deps are installed)",
+        "package.json dependency state (empty dependencies, no peerDependencies/optionalDependencies fields)",
+        "Logger seam doc comments (src/logger.ts, src/index.ts) naming the future span-exporter hook"
+      ],
+      "expectedResult": "A decisions.md OTEL peer-dep posture entry \u2014 one dated decision record, no code and no dependency install, naming the OTEL span-exporter demo bar it unblocks.",
+      "dependsOn": [],
+      "compensation": "None needed \u2014 doc-only.",
+      "rubric": [
+        {
+          "id": "dated-record-present",
+          "label": "Dated decision record present",
+          "ruleStatement": "A new, dated decisions.md entry about the OTEL peer-dep posture exists in the deliverable file.",
+          "passCriteria": [
+            "docs/roadmaps/llm-http-proxy/decisions.md contains an entry whose heading mentions OTEL (e.g. 'OTEL peer' or 'OpenTelemetry').",
+            "The entry carries a date in YYYY-MM-DD format and is the newest entry in the file (no later-dated entry above it).",
+            "git diff -- docs/roadmaps/llm-http-proxy/decisions.md shows this entry as newly added text and not as an edit to an existing decision."
+          ],
+          "failureExamples": [
+            "No new entry about OTEL peer posture appears in decisions.md.",
+            "The newest entry discusses OTEL but has no date, so it cannot be audited to this horizon."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "peer-posture-declared",
+          "label": "Optional peer-dependency posture declared",
+          "ruleStatement": "The record commits to @opentelemetry/* as optional peer dependencies only, never hard or direct dependencies.",
+          "passCriteria": [
+            "The entry names the package scope '@opentelemetry/*' verbatim.",
+            "The entry contains 'peer' in the sense of 'optional peer dependencies' or 'peerDependencies'.",
+            "The entry explicitly negates a hard dependency, e.g. contains 'never a hard dependency', 'not a hard dependency', or 'not a direct dependency'."
+          ],
+          "failureExamples": [
+            "The entry describes the OTEL posture without ever saying whether the packages are peers, hard deps, or bundled.",
+            "The entry says 'add OpenTelemetry as a regular dependency' with no peer or optional qualifier."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "logger-seam-activation-named",
+          "label": "Logger-seam activation named with install guard",
+          "ruleStatement": "The record names the existing Logger seam as the future span-exporter activation point and makes activation conditional on the peer packages being installed.",
+          "passCriteria": [
+            "The entry names the seam by containing 'Logger seam', 'src/logger.ts', or 'src/index.ts'.",
+            "The entry includes an install-guard condition such as 'only when installed', 'only if present', or 'when the peer deps are present'.",
+            "The entry does not name a new file or hook that would have to be built this horizon."
+          ],
+          "failureExamples": [
+            "The entry promises a span exporter but never says where activation will hook in.",
+            "The entry implies the exporter is always active, with no 'only when installed' condition."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "non-goal-scope-stated",
+          "label": "Non-goal scope stated explicitly",
+          "ruleStatement": "The record states what the decision does not do this horizon \u2014 no dependency install and no activation code \u2014 and names the deferred bar it unblocks.",
+          "passCriteria": [
+            "The entry contains an explicit out-of-scope statement such as 'no dependency is installed', 'no code ships this horizon', or 'no activation code'.",
+            "The entry contains 'OTEL span-exporter demo' or 'span-exporter demo' and marks it 'deferred' and 'unblocked' (or 'no longer blocked') for a later horizon.",
+            "The text gives no command or checklist that would add a dependency or edit source (no 'npm install @opentelemetry/*' or 'implement the exporter' step)."
+          ],
+          "failureExamples": [
+            "The entry records a posture but never says what is out of scope, so the horizon boundary is unenforceable.",
+            "The entry closes with a to-do like 'next: wire the exporter into src/logger.ts this horizon', which is a code step, not a decision."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "doc-only-integrity",
+          "label": "Text-only change, no code or dependency drift",
+          "ruleStatement": "Repo state proves the phase was doc-only: no source changed, no dependencies added, so the change is trivially rollback-safe.",
+          "passCriteria": [
+            "git status --porcelain shows only docs/roadmaps/llm-http-proxy/decisions.md as modified.",
+            "git diff -- package.json package-lock.json produces no output and package.json still has no 'peerDependencies' or 'optionalDependencies' field containing @opentelemetry/*.",
+            "git diff -- src/ produces no output and no @opentelemetry import or reference appears outside decisions.md."
+          ],
+          "failureExamples": [
+            "package.json shows @opentelemetry/api added under dependencies or peerDependencies after this phase.",
+            "src/logger.ts was edited to import an OpenTelemetry package.",
+            "A new source file (e.g. otel-exporter.ts) appears in the diff."
+          ],
+          "minScore": 10
+        }
+      ],
+      "healerHint": "The most likely failure is the entry drifting into wishy-washy plan-speak \u2014 describing what the posture 'will be' with no explicit non-goal and no install-guard \u2014 so the fastest fix is rewriting it as two labeled lines, 'Decision:' naming optional peer deps activated via the Logger seam only when installed, and 'Non-goals this horizon:' stating no install and no code, a 60-second text edit that repairs every rubric dimension at once."
+    }
+  ],
+  "successCriteria": [
+    "(1) A latency benchmark harness (a standalone script or a jest-compat *.test.ts/*.spec.ts spec \u2014 a *.bench.ts file matches neither jest config, so it would silently not run) executes the binding signed-off method: interleaved baseline-vs-intercepted runs over the real patched ClientRequest path, 1000 warmup + 10000 measured iterations, process.hrtime.bigint/perf_hooks clocks, measuring both named measurement points \u2014 the request path (shouldCapture/wrappers/requestTransform) and the response-data path (appendChunk/per-event parse+count) \u2014 and records the p50/p99 added-latency numbers for buffered non-streaming interception (incl. requestTransform work) against the anchors p50 <1ms / p99 <2%, with the streaming response-data-path per-event cost visible per the methodology, and the recorded numbers are committed, pass or fail; (2) decisions.md gains the two dated decision records \u2014 package identity (name/version/license, incl. whether streaming support is a same-version additive surface or a version bump) closing blockers.md line 2, and the OTEL peer-dep posture (@opentelemetry/* optional/peer activation) \u2014 each naming the deferred bar it unblocks (package-identity-and-publish; OTEL span-exporter demo); (3) no feature code beyond the bench harness, and the two-level gate is green (package tsc/eslint/jest/build with dist rebuilt, then root build/jest/lint).",
+    "Add latency benchmark that runs on demand: src/benchmark.test.ts \u2014 the single opt-in harness spec that default `npm test` skips in milliseconds and `RUN_BENCH=1 npx jest src/benchmark.test.ts` executes as the full signed-off measurement, with gates green.",
+    "Run benchmark and commit results: docs/roadmaps/llm-http-proxy/benchmark-results.md \u2014 one committed, dated, attributable results report with request-path and response-data-path p50/p99 numbers and an explicit PASS/FAIL verdict against each signed-off anchor.",
+    "Decide package name version and license: A decisions.md package-identity decision record with blockers.md line 2 closed \u2014 one dated decision entry, not code, naming the package-identity-and-publish bar it unblocks.",
+    "Decide OTEL peer dependency posture: A decisions.md OTEL peer-dep posture entry \u2014 one dated decision record, no code and no dependency install, naming the OTEL span-exporter demo bar it unblocks."
+  ],
+  "deferred": [
+    "Executing the OTEL span-exporter demo \u2014 the posture decision this horizon records merely unblocks it; the demo itself needs @opentelemetry/* dependency install + exporter code and remains a deferred full-objective success bar.",
+    "npm publish verification / dry-run \u2014 unblocked by the package-identity decision (name llm-http-proxy confirmed free on npm via 404 on 2026-08-29) but the publish bar itself stays deferred; includes the publish-hygiene debt (missing package README.md referenced by files[], empty author field).",
+    "Latency-regression remediation \u2014 if the benchmark records a budget miss (p50 >=1ms or p99 >=2%), fixing the underlying interceptor/parser code is follow-up work for a later horizon; this horizon records honestly per the signed-off method.",
+    "Changing either jest config to pick up *.bench.ts \u2014 out of scope; the opt-in RUN_BENCH-gated jest spec runs under existing configs.",
+    "Streaming residuals (cross-event redaction continuity, caller-visible stream replay, non-SSE streaming formats) \u2014 named residuals from the streaming re-pin, still not re-scoped by the user.",
+    "npm bench convenience script \u2014 the RUN_BENCH=1 npx jest src/benchmark.test.ts invocation is documented in the harness phase; a wrapper script was judged YAGNI until the workflow proves awkward.",
+    "Authoring the missing package README.md and filling the empty author field \u2014 publish-hygiene debt acknowledged in the package-identity decision record; belongs to the publish-verification bar.",
+    "Rewording vision.md's superseded 'no work beyond body capture on the request path' phrase \u2014 already reconciled by the horizon-4 decisions.md sign-off; the cosmetic doc edit can wait."
+  ]
+}

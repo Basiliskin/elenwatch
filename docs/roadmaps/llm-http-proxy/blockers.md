@@ -1,5 +1,5 @@
 # Open questions
-- 2026-08-28 | horizon 1 | package name/version/license not chosen — open package-identity decision blocks scaffold manifest
+- 2026-08-28 | horizon 1 | package name/version/license not chosen — open package-identity decision blocks scaffold manifest — resolved by decision 2026-08-29 (horizon 5 package-identity record; npm 404 on 2026-08-29 confirmed name free)
 - 2026-08-28 | horizon 1 | explicit latency budget + benchmark methodology not signed off (numbers/hardware/method) — blocks horizon-2 latency-benchmark gate — resolved by decision 2026-08-28 (horizon 4 sign-off)
 - 2026-08-28 | horizon 1 | is the public LlmLogEntry/LlmLoggingOptions API semver-frozen before horizon-2 adapter/docs work, or free to evolve?
 - 2026-08-28 | horizon 1 | is process-global http/https monkey-patching acceptable to ship, or is a less invasive seam mandated before publish?
@@ -13,3 +13,7 @@
 - 2026-08-28 | horizon 4 | on a mid-stream abort before the terminal SSE event, does the rewired response strand emit an entry at all (no res 'error'/'aborted'/'close' handler)?
 - 2026-08-28 | horizon 4 | which body feeds parseCall/maskedResponseBody when capturePayloads=true + responseTransform both set on the SSE path — pre/post-transform, pre/post-redaction (ADR §3 must state it unambiguously)?
 - 2026-08-28 | horizon 4 | what is the exact SSE-detection fallback cap when content-type is absent but data:-line shape is present — can a chunked JSON response be misrouted?
+- 2026-08-29 | horizon 5 | did benchmark-results.md record a budget miss (p50 >=1ms / p99 >=2%) on any measurement point, and is a miss attributable to interceptor/parser code or environmental noise?
+- 2026-08-29 | horizon 5 | does the current Logger seam expose enough surface for an OTEL span exporter, or does the demo require a new seam signature/option first?
+- 2026-08-29 | horizon 5 | does npm publish --dry-run pass cleanly given package.json files[] references a nonexistent package README.md and author is empty, or must hygiene fixes land first?
+- 2026-08-29 | horizon 5 | which deferred full-objective bar executes first now both are unblocked — publish verification (dry-run, no deps) or the OTEL span-exporter demo (dep install + exporter code)?

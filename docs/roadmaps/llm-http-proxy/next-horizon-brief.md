@@ -1,46 +1,40 @@
-# Next-horizon brief (for horizon 5) — prepared Stage 3.5, horizon 4
+# Next-horizon brief (for horizon 6) — prepared Stage 3.5, horizon 5
 
 
 ## Unknowns
-- Do real OpenAI chat/completions and Anthropic Messages streaming responses actually deliver the terminal usage-bearing event (OpenAI final usage chunk, Anthropic message_delta usage) and a per-chunk model field in every default interaction — or only when usage/stream_usage request params are set — so the 'usage-wins-else-incremental-estimate' AC is reachable without those params?
-- On a mid-stream abort or connection drop before the terminal SSE event, does the rewired response strand emit any entry at all — attachCapture still has NO res 'error'/'aborted'/'close' handler — and if it emits, does it degrade to 'unknown'/0, violating AC item 1?
-- When capturePayloads=true AND responseTransform are both set on the SSE path, which body feeds parseCall and maskedResponseBody — pre- or post-transform, pre- or post-redaction — and does the re-pinned ADR §3 state this unambiguously for the per-event path?
-- What is the exact SSE-detection fallback cap/threshold when content-type is absent but data:-line shape is present, and can a non-SSE chunked JSON response be misrouted into the streaming path with silent corruption or unbounded accumulation?
-- Do the signed-off latency budget numbers cover the per-event parse+count work now on the response-data path, or only request-path transformer work — can the later benchmark-execution horizon measure without that ambiguity?
-- Was the @opentelemetry/* peer-dep decision made by this horizon's close, or does the OTEL span-exporter demo remain blocked?
-- Is the horizon-1 package name/version/license blocker still open, and are the streaming additions a same-version additive surface or do they imply a 0.3.0 bump before package-identity-and-publish can proceed?
-- How many tests does the package hold at this horizon's close (95 at horizon 3), and did the streaming additions include an end/error/abort-ordering regression set beyond the happy-path stream test?
+- Did the committed benchmark-results.md record a budget miss (p50 >=1ms or p99 >=2%) on the request path, the buffered response-data path, or the streaming per-event path — and for any miss, is it attributable to the interceptor/parser code or to environmental noise?
+- Did the OTEL-posture decision record name an activation mechanism (optionalDependencies vs peerDependencies vs runtime feature-detect) specific enough that the demo can be written against it without reopening the decision?
+- Does the current Logger seam expose enough surface for a span exporter to attach to, or does writing the OTEL demo first require a new seam signature/option beyond what exists?
+- Does `npm publish --dry-run` today actually pass cleanly given package.json files[] references a nonexistent package README.md and the author field is empty, or must hygiene fixes land before the publish bar can be claimed?
+- Did the package-identity decision resolve the streaming-same-version-additive vs 0.3.0-bump sub-question, and what does that resolution opt into for the still-open blockers.md LlmLogEntry/LlmLoggingOptions semver-freeze question?
+- Which of the named streaming residuals (cross-event redaction continuity, caller-visible stream replay, non-SSE streaming formats) are still authentically un-scoped after the transformer-slice re-pin and SSE rewire, rather than implicitly settled?
 
-## Research (before planning horizon 5)
-- Read the current horizon's roadmap+status files (horizons/horizon-04-*.json and *.status.json) and state.md to confirm which of the five phases landed, the new package test count, and any open success-coverage debt.
-- Re-read the re-pinned docs/roadmaps/llm-http-proxy/transformer-slice-spec.md §§1-6 and take its per-event vs buffered responseTransform semantics, capturePayloads=true policy, and named cross-event redaction residual as binding contract — do not re-derive them.
-- Read decisions.md for the signed-off benchmark methodology + budget numbers (the binding input for any latency-benchmark-execution phase) and confirm blockers.md line 3 was actually closed.
-- Grep packages/llm-http-proxy/src for responseTransform, text/event-stream, and the event-stream-parser import to verify the detection line, the invocation sites, and that additive surface stayed additive.
-- Read the landed event-stream-parser.ts module and its tests to learn the exact StreamingResult shape before planning anything that consumes it.
-- Re-read interceptor.test.ts's startServer/post/withEntries real-patched-path and fakeReq+emit('data') harnesses to reuse for a benchmark or abort-order spec.
-- Re-run the two-level gate (package tsc/eslint/jest/build, root build+jest with package dist rebuilt first) before planning any code phase.
-- Check git log and packages/llm-http-proxy/package.json scripts/testRegex to see whether any bench infrastructure or live fixtures (src/__fixtures__/) actually landed.
+## Research (before planning horizon 6)
+- Read docs/roadmaps/llm-http-proxy/benchmark-results.md for the recorded p50/p99 numbers and the PASS/FAIL verdict per measurement point before deciding whether any latency remediation is owed.
+- Re-read decisions.md for the two new records (package identity, OTEL posture) and confirm blockers.md line 2 is actually closed and which deferred bar each record names.
+- Read packages/llm-http-proxy/src/logger.ts and its doc comments in src/index.ts:5 and src/logger.test.ts:4 to learn the exact Logger-seam shape an OTEL span exporter must implement.
+- Check packages/llm-http-proxy/package.json files[] against the package directory for the missing README.md and empty author field, and run npm publish --dry-run to see what actually blocks a clean publish.
+- Run the opt-in `RUN_BENCH=1 npx jest src/benchmark.test.ts` from the package directory to verify the harness still reproduces the committed numbers on current hardware.
+- Re-read docs/roadmaps/llm-http-proxy/transformer-slice-spec.md §6 exclusions and the re-pinned per-event clauses to confirm which streaming residuals remain genuinely open.
+- Run the two-level gate (package build/lint/typecheck/jest with dist rebuilt, then root build/jest) before planning any phase that will consume or verify the package.
 
-## Decisions needed (horizon 5 cannot avoid these)
-- Latency-benchmark execution scope: whether to execute the signed-off benchmark in the next horizon, and if so which runner — no *.bench.ts would be picked up by either jest config, so the harness is a standalone script or a jest-compat spec, and the interleaved baseline/interception design must faithfully match the signed-off method without gaming the p50/p99 measurement points.
-- Package identity: whether to finally resolve the horizon-1 name/version/license choice now (VERSION 0.2.0 exists with a real in-repo consumer) to unblock package-identity-and-publish, or defer it yet again.
-- Streaming as public API: whether to export the event-stream parser / StreamingResult from index.ts as first-class 0.2.0 surface, or keep streaming additive-internal — intertwined with the unresolved blockers.md semver-freeze question.
-- OTEL peer-dep posture: whether to make the @opentelemetry/* optional-deps-activation decision now (unblocking the deferred OTEL span-exporter demo) or leave it parked.
-- Which deferred full-objective bar to sequence first — benchmark-execution, OTEL-exporter-demo, or publish-verification — and whether the named streaming residuals (cross-event redaction continuity, caller-visible replay, non-SSE formats) are re-scoped in or declared permanently out.
+## Decisions needed (horizon 6 cannot avoid these)
+- Which deferred full-objective bar to execute first now that both are unblocked — publish verification (dry-run, no deps) vs the OTEL span-exporter demo (dep install + exporter code through the Logger seam) — and whether the two fit in one horizon.
+- If the benchmark records a miss: whether latency-regression remediation (interceptor/parser fixes) is next-horizon work or stays unowned follow-up despite the recorded FAIL.
+- The OTEL dependency mechanism and version range: optionalDependencies vs peerDependencies for @opentelemetry/*, given the posture record names activation via the Logger seam but no install mechanism is scaffolded yet.
+- Whether the missing package README.md and empty author field are must-fix prerequisites for publish verification or acceptable to ship and correct post-publish.
+- Whether the streaming residuals (cross-event redaction continuity, caller-visible stream replay, non-SSE formats) get re-scoped into a named future horizon or are permanently declared out.
+- Whether the blockers.md semver-freeze question (LlmLogEntry/LlmLoggingOptions frozen vs free to evolve) must be resolved before publish, since publishing locks the public API surface.
 
 ## Artifacts to inspect
-- packages/llm-http-proxy/src/event-stream-parser.ts (landed this horizon — StreamingResult shape, bounded line/event buffer)
-- packages/llm-http-proxy/src/interceptor.ts (rewired attachCapture 'response' callback, SSE detection, completeCapture/emitLogEntry interplay)
-- packages/llm-http-proxy/src/options.ts (InterceptorOptions — whether responseTransform landed additively)
-- packages/llm-http-proxy/src/index.ts (public export surface — did streaming types get exported?)
-- packages/llm-http-proxy/src/interceptor.test.ts (streaming tests + startServer/post/withEntries and fakeReq harnesses)
-- packages/llm-http-proxy/src/__fixtures__/ (only if created — provenance of provider transcripts, live vs doc-lifted)
-- docs/roadmaps/llm-http-proxy/transformer-slice-spec.md (re-pinned §§1-6, per-event ordering clause, cross-event redaction residual)
-- docs/roadmaps/llm-http-proxy/decisions.md (signed-off benchmark methodology + budget numbers lines, and the vision.md reconciliation)
-- docs/roadmaps/llm-http-proxy/blockers.md (line 3 benchmark-methodology closure; still-open status of the others)
-- docs/roadmaps/llm-http-proxy/state.md (this horizon's completed/planned entry)
-- docs/roadmaps/llm-http-proxy/vision.md (reconciled latency bar + remaining still-binding success bars)
-- packages/llm-http-proxy/package.json (scripts + jest testRegex — what a bench harness must conform to)
+- docs/roadmaps/llm-http-proxy/benchmark-results.md (recorded p50/p99 numbers + PASS/FAIL verdicts, if the run phase landed)
+- docs/roadmaps/llm-http-proxy/decisions.md (the two new records: package identity, OTEL posture)
+- docs/roadmaps/llm-http-proxy/blockers.md (line 2 closed; line 4 semver-freeze still open)
+- docs/roadmaps/llm-http-proxy/transformer-slice-spec.md (§6 exclusions, re-pinned per-event clauses)
+- packages/llm-http-proxy/src/benchmark.test.ts (the RUN_BENCH-gated harness — shape to reproduce numbers on)
+- packages/llm-http-proxy/src/logger.ts and src/index.ts (Logger seam — the OTEL exporter activation point)
+- packages/llm-http-proxy/src/interceptor.ts (code under latency scrutiny if a miss was recorded)
+- packages/llm-http-proxy/package.json (files[]/author publish-hygiene gaps)
 
 ## Recommended next-horizon scope
-The next horizon should be small and decision-driven: first verify this horizon's lands (parser, re-pin, rewire, methodology sign-off) and then execute the now-signed-off latency benchmark — the one deferred item that is unblocked and needs no further decisions — keeping it to one contained phase (harness + run + numbers recorded against the signed-off method, explicitly measuring the streaming response-data-path cost if the methodology requires it). Alongside that, resolve the two pure-decision blockers that gate whole deferred bars and fit without code: package identity (name/version/license) and the OTEL peer-dep posture, decided in decisions.md; that unblocks publish-verification and the OTEL demo for later horizons. Hold off on actually building the OTEL exporter demo and publish verification until those two decisions land, and do not attempt cross-event redaction continuity, caller-visible stream replay, or non-SSE streaming formats unless the user re-scopes them — they are named residuals, not next-horizon work. Roughly one to three phases.
+The next horizon should execute one, at most two, of the now-unblocked deferred full-objective bars while keeping the small 3-5 phase envelope — do not attempt both plus residuals. Publish verification is the lighter bar: the name is confirmed free on npm, so it is essentially an `npm publish --dry-run` plus the two known hygiene fixes (the missing package README.md that files[] already references, and the empty author field), with no new feature code and no dependency installs. The OTEL span-exporter demo is the heavier bar — installing optional @opentelemetry/* per the recorded posture, wiring an exporter through the existing Logger seam, and proving opt-in-only activation — and it is the first true consumer of that seam, so it may surface seam gaps that deserve their own horizon rather than sharing one with publish work. Latency-regression remediation is only real work if benchmark-results.md records a miss (p50 >=1ms or p99 >=2%), in which case it should displace one of the bars; the streaming residuals stay declared-out unless the user re-scopes them. Roughly two to four phases.
