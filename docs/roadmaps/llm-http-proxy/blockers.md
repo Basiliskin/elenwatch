@@ -1,5 +1,5 @@
 # Open questions
-- 2026-08-28 | horizon 1 | package name/version/license not chosen — open package-identity decision blocks scaffold manifest — resolved by decision 2026-08-29 (horizon 5 package-identity record; npm 404 on 2026-08-29 confirmed name free)
+- 2026-08-28 | horizon 1 | package name/version/license not chosen — open package-identity decision blocks scaffold manifest — resolved by decision 2026-08-29 (horizon 5 package-identity record; decision-time registry check `npm view llm-http-proxy` returned HTTP 404 from https://registry.npmjs.org/llm-http-proxy on 2026-08-29, name free; unblocks the package-identity-and-publish bar)
 - 2026-08-28 | horizon 1 | explicit latency budget + benchmark methodology not signed off (numbers/hardware/method) — blocks horizon-2 latency-benchmark gate — resolved by decision 2026-08-28 (horizon 4 sign-off)
 - 2026-08-28 | horizon 1 | is the public LlmLogEntry/LlmLoggingOptions API semver-frozen before horizon-2 adapter/docs work, or free to evolve?
 - 2026-08-28 | horizon 1 | is process-global http/https monkey-patching acceptable to ship, or is a less invasive seam mandated before publish?

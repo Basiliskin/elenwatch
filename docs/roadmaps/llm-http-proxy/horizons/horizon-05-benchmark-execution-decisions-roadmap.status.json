@@ -1,114 +1,194 @@
 {
-  "roadmapFile": "docs/roadmaps/llm-http-proxy/horizons/horizon-05-benchmark-execution-decisions-roadmap.json",
-  "roadmapTask": "Horizon 5 of the llm-http-proxy project: execute the now-signed-off latency benchmark (the horizon-4 decisions.md sign-off records the concrete method and budget anchors p50 <1ms / p99 <2% added latency) and resolve the two pure-decision blockers that gate whole deferred success bars \u2014 package identity (name/version/license, unblocks package-identity-and-publish) and the OTEL peer-dep posture (unblocks the OTEL span-exporter demo). No new feature code beyond what the benchmark harness requires; the benchmark harness must run under the existing jest configs or as a standalone script since *.bench.ts is picked up by neither jest config. User-scoped per the next-horizon brief: benchmark execution + the two decisions, roughly 3-5 phases.",
   "createdAt": "2026-08-28T00:00:00.000Z",
-  "updatedAt": "2026-08-29T17:00:00.000Z",
   "phases": [
     {
-      "phaseId": "add-opt-in-latency-benchmark-spec",
-      "status": "done",
       "attempts": 1,
-      "startedAt": "2026-08-28T00:00:00.000Z",
       "completedAt": "2026-08-28T00:00:00.000Z",
-      "gateRun": "cd packages/llm-http-proxy && (npm run typecheck; npm run lint; npm test; npm run build) && RUN_BENCH=1 npx jest src/benchmark.test.ts --runInBand",
+      "gateRun": "cd packages/llm-http-proxy \u0026\u0026 (npm run typecheck; npm run lint; npm test; npm run build) \u0026\u0026 RUN_BENCH=1 npx jest src/benchmark.test.ts --runInBand",
       "gradeResult": {
-        "phaseId": "add-opt-in-latency-benchmark-spec",
         "dimensionScores": [
           {
             "dimensionId": "opt-in-gating",
-            "score": 9,
+            "evidence": "Whole suite wrapped as if(RUN_BENCH) describe else describe.skip; npm test reports 1 suite/2 tests skipped, 124 passed, 1.4s exit 0; RUN_BENCH run executes tests and exits non-zero only because the request p99 anchor FAils (intended loud label per budget-anchor-compliance).",
             "pass": true,
-            "evidence": "Whole suite wrapped as if(RUN_BENCH) describe else describe.skip; npm test reports 1 suite/2 tests skipped, 124 passed, 1.4s exit 0; RUN_BENCH run executes tests and exits non-zero only because the request p99 anchor FAils (intended loud label per budget-anchor-compliance)."
+            "score": 9
           },
           {
             "dimensionId": "measurement-method-fidelity",
-            "score": 10,
+            "evidence": "Single interleaved loop over one 127.0.0.1 server: 1000 warmup + 10000 measured; process.hrtime.bigint everywhere; no Date.now.",
             "pass": true,
-            "evidence": "Single interleaved loop over one 127.0.0.1 server: 1000 warmup + 10000 measured; process.hrtime.bigint everywhere; no Date.now."
+            "score": 10
           },
           {
             "dimensionId": "request-path-measurement",
-            "score": 10,
+            "evidence": "startServer on 127.0.0.1 + real http.request; intercepted samples install Interceptor with requestTransform; added latency = intercepted minus baseline per iteration.",
             "pass": true,
-            "evidence": "startServer on 127.0.0.1 + real http.request; intercepted samples install Interceptor with requestTransform; added latency = intercepted minus baseline per iteration."
+            "score": 10
           },
           {
             "dimensionId": "response-data-path-measurement",
-            "score": 10,
+            "evidence": "fakeReq EventEmitter + emit('data') loop; both buffered and streaming (text/event-stream) configs timed per event; self-contained try/finally.",
             "pass": true,
-            "evidence": "fakeReq EventEmitter + emit('data') loop; both buffered and streaming (text/event-stream) configs timed per event; self-contained try/finally."
+            "score": 10
           },
           {
             "dimensionId": "budget-anchor-compliance",
-            "score": 10,
+            "evidence": "Full method executed; printed request added p50 0.053ms / p99 0.179ms (177.64% of own baseline) + response-data buffered 0.0005 vs streaming 0.0292ms; p99 FAILed loudly, numbers committed, no retry/fallback/skip.",
             "pass": true,
-            "evidence": "Full method executed; printed request added p50 0.053ms / p99 0.179ms (177.64% of own baseline) + response-data buffered 0.0005 vs streaming 0.0292ms; p99 FAILed loudly, numbers committed, no retry/fallback/skip."
+            "score": 10
           },
           {
             "dimensionId": "scope-containment-gates-green",
-            "score": 10,
+            "evidence": "Only benchmark.test.ts added; imports existing exports only; typecheck/lint/build exit 0; zero diff on interceptor/options/index/jest configs.",
             "pass": true,
-            "evidence": "Only benchmark.test.ts added; imports existing exports only; typecheck/lint/build exit 0; zero diff on interceptor/options/index/jest configs."
+            "score": 10
           }
         ],
-        "overallPass": true
+        "overallPass": true,
+        "phaseId": "add-opt-in-latency-benchmark-spec"
       },
-      "notes": "Budget verdict honest: request p50 PASSes (<1ms), request p99 FAILs (177% of baseline p99) \u2014 flows to run-benchmark-and-commit-results as the recorded miss + deferred latency-regression remediation. describe.skipIf absent from @types/jest 29; used if(RUN_BENCH) describe else describe.skip. Compensation known: delete src/benchmark.test.ts restores surface."
+      "notes": "Budget verdict honest: request p50 PASSes (\u003c1ms), request p99 FAILs (177% of baseline p99) — flows to run-benchmark-and-commit-results as the recorded miss + deferred latency-regression remediation. describe.skipIf absent from @types/jest 29; used if(RUN_BENCH) describe else describe.skip. Compensation known: delete src/benchmark.test.ts restores surface.",
+      "phaseId": "add-opt-in-latency-benchmark-spec",
+      "startedAt": "2026-08-28T00:00:00.000Z",
+      "status": "done"
     },
     {
-      "phaseId": "run-benchmark-and-commit-results",
-      "status": "done",
       "attempts": 1,
-      "startedAt": "2026-08-29T00:00:00.000Z",
       "completedAt": "2026-08-29T00:00:00.000Z",
-      "gateRun": "cd packages/llm-http-proxy && npm run build && RUN_BENCH=1 npx jest src/benchmark.test.ts --runInBand (recorded run + clean re-run); gates: package typecheck/lint/build + npm test (124 passed, bench skipped) + root nest build/jest (5 passed)/lint",
+      "gateRun": "cd packages/llm-http-proxy \u0026\u0026 npm run build \u0026\u0026 RUN_BENCH=1 npx jest src/benchmark.test.ts --runInBand (recorded run + clean re-run); gates: package typecheck/lint/build + npm test (124 passed, bench skipped) + root nest build/jest (5 passed)/lint",
       "gradeResult": {
-        "phaseId": "run-benchmark-and-commit-results",
         "dimensionScores": [
           {
             "dimensionId": "budget-verdicts-per-anchor",
-            "score": 10,
+            "evidence": "Report records raw numbers per anchor: request added p50 0.060ms (PASS \u003c1ms), added p99 0.496ms = 173.88% of own baseline (FAIL \u003e2%), response-data buffered 0.000541ms vs streaming 0.032083ms/event, streaming delta 31.542us; every verdict recomputable from decisions.md line 11 anchors.",
             "pass": true,
-            "evidence": "Report records raw numbers per anchor: request added p50 0.060ms (PASS <1ms), added p99 0.496ms = 173.88% of own baseline (FAIL >2%), response-data buffered 0.000541ms vs streaming 0.032083ms/event, streaming delta 31.542us; every verdict recomputable from decisions.md line 11 anchors."
+            "score": 10
           },
           {
             "dimensionId": "fresh-build-attribution",
-            "score": 10,
+            "evidence": "Report pins commit SHA 7c6e0d9, names hardware (Apple M1 Max, macOS 26.5.2, Node v22.14.0); dist rebuilt immediately before the run (mtime 2026-08-29T16:40:38Z \u003e commit time); phase diff touches only docs + benchmark-results.md.",
             "pass": true,
-            "evidence": "Report pins commit SHA 7c6e0d9, names hardware (Apple M1 Max, macOS 26.5.2, Node v22.14.0); dist rebuilt immediately before the run (mtime 2026-08-29T16:40:38Z > commit time); phase diff touches only docs + benchmark-results.md."
+            "score": 10
           },
           {
             "dimensionId": "method-fidelity-to-signoff",
-            "score": 10,
+            "evidence": "Method section documents 1000 warmup/10000 measured, interleaved baseline-vs-intercepted single loop, process.hrtime.bigint clocks, both measurement points; benchmark.test.ts byte-identical between phase commit and parent; hardware-pinning rule applied and stated.",
             "pass": true,
-            "evidence": "Method section documents 1000 warmup/10000 measured, interleaved baseline-vs-intercepted single loop, process.hrtime.bigint clocks, both measurement points; benchmark.test.ts byte-identical between phase commit and parent; hardware-pinning rule applied and stated."
+            "score": 10
           },
           {
             "dimensionId": "clean-rerun-reproducibility",
-            "score": 10,
+            "evidence": "Clean re-run from rebuilt dist reproduced numbers within 2x (p50 0.055ms vs 0.060ms, p99 114.72% vs 173.88% of baseline, response-data 28.792us vs 31.542us added/event) and identical verdicts (p50 PASS, p99 FAIL); no hang, no 'no tests'.",
             "pass": true,
-            "evidence": "Clean re-run from rebuilt dist reproduced numbers within 2x (p50 0.055ms vs 0.060ms, p99 114.72% vs 173.88% of baseline, response-data 28.792us vs 31.542us added/event) and identical verdicts (p50 PASS, p99 FAIL); no hang, no 'no tests'."
+            "score": 10
           },
           {
             "dimensionId": "default-suite-scope-guard",
-            "score": 10,
+            "evidence": "Default npm test completes in seconds with suite skipped (124 passed, 2 skipped); package lint/typecheck/build green; root nest build + jest 5/5 green against freshly rebuilt dist; phase diff touches only docs/ (benchmark-results.md), no src changes; compensation is a doc delete.",
             "pass": true,
-            "evidence": "Default npm test completes in seconds with suite skipped (124 passed, 2 skipped); package lint/typecheck/build green; root nest build + jest 5/5 green against freshly rebuilt dist; phase diff touches only docs/ (benchmark-results.md), no src changes; compensation is a doc delete."
+            "score": 10
           }
         ],
-        "overallPass": true
+        "overallPass": true,
+        "phaseId": "run-benchmark-and-commit-results"
       },
-      "notes": "Compensation known: the phase's deliverable is docs-only (benchmark-results.md), deleting the file fully reverts the phase. Honest recorded miss: request-path p99 FAIL at 173.88% of baseline p99 (anchor <2%); p50 PASS 0.060ms; miss dominated by interleaved install/restore churn per run; latency-regression remediation deferred per roadmap. Evidence already appended to discoveries.md and blockers.md (line 16 resolved by execution)."
+      "notes": "Compensation known: the phase's deliverable is docs-only (benchmark-results.md), deleting the file fully reverts the phase. Honest recorded miss: request-path p99 FAIL at 173.88% of baseline p99 (anchor \u003c2%); p50 PASS 0.060ms; miss dominated by interleaved install/restore churn per run; latency-regression remediation deferred per roadmap. Evidence already appended to discoveries.md and blockers.md (line 16 resolved by execution).",
+      "phaseId": "run-benchmark-and-commit-results",
+      "startedAt": "2026-08-29T00:00:00.000Z",
+      "status": "done"
     },
     {
+      "attempts": 1,
+      "completedAt": "2026-08-29T00:00:00.000Z",
+      "gateRun": "package: npm run typecheck (0 err), npm run lint (0 problems), npm test (124 passed, 2 skipped), npm run build (dual ESM/CJS + postbuild); root: nest build, npx jest (5/5), npm run lint (1 pre-existing warning src/main.ts, untouched)",
+      "gradeResult": {
+        "dimensionScores": [
+          {
+            "dimensionId": "identity-fields-pinned",
+            "evidence": "decisions.md line 12 (dated 2026-08-29, 'package identity is pinned') contains exact tokens llm-http-proxy, 0.2.0, MIT",
+            "pass": true,
+            "score": 10
+          },
+          {
+            "dimensionId": "registry-availability-fact-recorded",
+            "evidence": "entry records decision-time `npm view llm-http-proxy` on 2026-08-29 returning HTTP 404 from https://registry.npmjs.org/llm-http-proxy",
+            "pass": true,
+            "score": 10
+          },
+          {
+            "dimensionId": "semver-posture-answered",
+            "evidence": "entry states streaming/responseTransform stay same-version additive on 0.2.0, 0.3.0 bump reserved for breaking changes, missing README.md recorded as publish-hygiene debt",
+            "pass": true,
+            "score": 10
+          },
+          {
+            "dimensionId": "blocker-closed-with-pointer",
+            "evidence": "blockers.md line 2 marked 'resolved by decision 2026-08-29' and names the package-identity-and-publish bar",
+            "pass": true,
+            "score": 10
+          },
+          {
+            "dimensionId": "doc-only-diff",
+            "evidence": "working tree shows only docs/roadmaps/llm-http-proxy decisions.md, blockers.md, and the horizon-05 ledger, no src/, package.json, or lockfile changes",
+            "pass": true,
+            "score": 10
+          }
+        ],
+        "overallPass": true,
+        "phaseId": "decide-package-identity"
+      },
+      "notes": "PLAN commit 7c6e0d9 pre-wrote the decisions.md package-identity entry and closed blockers.md line 2, but the record lacked decision-time registry evidence (planning-time 404 only) and the closure omitted the unblocked bar name; this run made the record rubric-complete with the decision-time check (npm view llm-http-proxy -\u003e HTTP 404 at https://registry.npmjs.org/llm-http-proxy on 2026-08-29). Compensation known: none needed, doc-only; record can be reworded anytime before publish.",
       "phaseId": "decide-package-identity",
-      "status": "not-started",
-      "attempts": 0
+      "startedAt": "2026-08-29T00:00:00.000Z",
+      "status": "done"
     },
     {
+      "attempts": 1,
+      "completedAt": "2026-08-29T17:30:00.000Z",
+      "gateRun": "git status --porcelain (only docs/roadmaps/llm-http-proxy/{decisions.md,blockers.md,horizon-05 status.json} modified); git diff -- package.json package-lock.json yarn.lock (empty); git diff -- packages/llm-http-proxy/src/ (empty); grep -rn @opentelemetry across repo (no occurrence outside roadmap docs); decisions.md OTEL entry verified as the newest dated record",
+      "gradeResult": {
+        "dimensionScores": [
+          {
+            "dimensionId": "dated-record-present",
+            "evidence": "decisions.md entry dated 2026-08-29 with heading 'OTEL posture' is the newest entry in the file; pre-written in PLAN commit 7c6e0d9 and completed rubric-complete this run.",
+            "pass": true,
+            "score": 9
+          },
+          {
+            "dimensionId": "peer-posture-declared",
+            "evidence": "Entry names '@opentelemetry/*' verbatim, 'optional peer dependencies', and 'never hard or direct dependencies'.",
+            "pass": true,
+            "score": 10
+          },
+          {
+            "dimensionId": "logger-seam-activation-named",
+            "evidence": "Entry names the existing Logger seam (src/logger.ts, src/index.ts doc comments) as the activation point with install guard 'only when those peer deps are installed'; no new file or hook named.",
+            "pass": true,
+            "score": 10
+          },
+          {
+            "dimensionId": "non-goal-scope-stated",
+            "evidence": "Entry states 'non-goals this horizon: no @opentelemetry/* dependency is installed and no activation code ships' and marks 'the OTEL span-exporter demo bar stays deferred and is merely unblocked for a later horizon'; no command/checklist adds a dep.",
+            "pass": true,
+            "score": 10
+          },
+          {
+            "dimensionId": "doc-only-integrity",
+            "evidence": "git status --porcelain shows only docs/roadmaps/llm-http-proxy/{decisions.md,blockers.md,horizon-05 status.json} modified; git diff on package.json/package-lock.json/yarn.lock and packages/llm-http-proxy/src/ both empty; grep finds no @opentelemetry reference outside roadmap docs; package.json still has no peerDependencies/optionalDependencies field.",
+            "pass": true,
+            "score": 10
+          }
+        ],
+        "overallPass": true,
+        "phaseId": "decide-otel-peer-dependency-posture"
+      },
+      "notes": "PLAN commit 7c6e0d9 pre-wrote a one-line OTEL posture entry naming the peer posture and Logger seam but omitting the explicit non-goal and the deferred+unblocked markers for the OTEL span-exporter demo bar; this run rewrote the entry rubric-complete (Decision + Non-goals pattern per healerHint), verified doc-only integrity, and closed the horizon: both pure-decision blockers recorded, both deferred bars (package-identity-and-publish; OTEL span-exporter demo) unblocked, zero code and zero dependency installed. Compensation known: none needed, doc-only.",
       "phaseId": "decide-otel-peer-dependency-posture",
-      "status": "not-started",
-      "attempts": 0
+      "startedAt": "2026-08-29T17:00:00.000Z",
+      "status": "done"
     }
-  ]
+  ],
+  "roadmapFile": "docs/roadmaps/llm-http-proxy/horizons/horizon-05-benchmark-execution-decisions-roadmap.json",
+  "roadmapTask": "Horizon 5 of the llm-http-proxy project: execute the now-signed-off latency benchmark (the horizon-4 decisions.md sign-off records the concrete method and budget anchors p50 \u003c1ms / p99 \u003c2% added latency) and resolve the two pure-decision blockers that gate whole deferred success bars — package identity (name/version/license, unblocks package-identity-and-publish) and the OTEL peer-dep posture (unblocks the OTEL span-exporter demo). No new feature code beyond what the benchmark harness requires; the benchmark harness must run under the existing jest configs or as a standalone script since *.bench.ts is picked up by neither jest config. User-scoped per the next-horizon brief: benchmark execution + the two decisions, roughly 3-5 phases.",
+  "updatedAt": "2026-08-29T17:30:00.000Z"
 }
