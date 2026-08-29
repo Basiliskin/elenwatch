@@ -1,35 +1,46 @@
-# Next-horizon brief (for horizon 4) — prepared Stage 3.5, horizon 3
+# Next-horizon brief (for horizon 5) — prepared Stage 3.5, horizon 4
+
 
 ## Unknowns
-- When the response strand buffers a captured response and the caller also has listeners, is the caller supposed to receive the transformed body on the IncomingMessage stream (requiring the interceptor to own/replay the data flow, displacing listeners attached before its own) or does the transform apply only to the buffered copy that emitLogEntry parses?
-- After the request strand mutates wire args and the response strand substitutes before JSON.parse, do parseCall/model/token extraction and maskedRequestBody/maskedResponseBody run against the pre- or post-transform body on each strand — is the logged entry the transformed body the caller/wire actually saw, or the originally captured buffer?
-- The transformer slice now does work on the request path and adds response-side buffering, contradicting vision.md's "no work beyond body capture on the request path" latency bar — what concrete method and numbers does the not-yet-signed-off benchmark methodology use to budget that work?
-- Which of the still-binding vision success bars (latency-budget benchmark, OTEL exporter demo, package identity/publish) were resolved during horizon 3, and which remain blockers the next horizon must unblock first?
+- Do real OpenAI chat/completions and Anthropic Messages streaming responses actually deliver the terminal usage-bearing event (OpenAI final usage chunk, Anthropic message_delta usage) and a per-chunk model field in every default interaction — or only when usage/stream_usage request params are set — so the 'usage-wins-else-incremental-estimate' AC is reachable without those params?
+- On a mid-stream abort or connection drop before the terminal SSE event, does the rewired response strand emit any entry at all — attachCapture still has NO res 'error'/'aborted'/'close' handler — and if it emits, does it degrade to 'unknown'/0, violating AC item 1?
+- When capturePayloads=true AND responseTransform are both set on the SSE path, which body feeds parseCall and maskedResponseBody — pre- or post-transform, pre- or post-redaction — and does the re-pinned ADR §3 state this unambiguously for the per-event path?
+- What is the exact SSE-detection fallback cap/threshold when content-type is absent but data:-line shape is present, and can a non-SSE chunked JSON response be misrouted into the streaming path with silent corruption or unbounded accumulation?
+- Do the signed-off latency budget numbers cover the per-event parse+count work now on the response-data path, or only request-path transformer work — can the later benchmark-execution horizon measure without that ambiguity?
+- Was the @opentelemetry/* peer-dep decision made by this horizon's close, or does the OTEL span-exporter demo remain blocked?
+- Is the horizon-1 package name/version/license blocker still open, and are the streaming additions a same-version additive surface or do they imply a 0.3.0 bump before package-identity-and-publish can proceed?
+- How many tests does the package hold at this horizon's close (95 at horizon 3), and did the streaming additions include an end/error/abort-ordering regression set beyond the happy-path stream test?
 
-## Research (before planning horizon 4)
-- Verify horizon 3 actually landed: read the horizon-03 status file + updated state.md line, then re-run the two-level gate (package tsc/eslint/jest/build, root nest build+jest, package dist rebuilt first).
-- Read the transformer slice-spec ADR this horizon produced under docs/roadmaps/llm-http-proxy/ and take its committed signatures, InterceptorOptions field names, ordering, Content-Length policy, response buffering boundary and out-of-scope list as contract — do not re-derive them.
-- Read interceptor.ts attachCapture (response data/end pipeline) and emitLogEntry to pin where the transformed response body substitutes before JSON.parse and whether any caller-visible re-emission path exists (it is listener-only today).
-- Read the landed request-strand implementation in writeWrapper/endWrapper and the transform fields added to options.ts so the response strand mirrors the same passthrough-default / replace-only / Buffer.byteLength semantics.
-- Re-read blockers.md and decisions.md: benchmark-methodology sign-off and package name/version decision were open at planning time — verify they still are.
-- Grep the package src for 'transform' and 'Content-Length' to inventory the landed request-strand code.
-- Read the response-path test designs in interceptor.test.ts (withEntries/post on-wire, fakeReq + direct attachCapture off-network) to reuse the harness.
+## Research (before planning horizon 5)
+- Read the current horizon's roadmap+status files (horizons/horizon-04-*.json and *.status.json) and state.md to confirm which of the five phases landed, the new package test count, and any open success-coverage debt.
+- Re-read the re-pinned docs/roadmaps/llm-http-proxy/transformer-slice-spec.md §§1-6 and take its per-event vs buffered responseTransform semantics, capturePayloads=true policy, and named cross-event redaction residual as binding contract — do not re-derive them.
+- Read decisions.md for the signed-off benchmark methodology + budget numbers (the binding input for any latency-benchmark-execution phase) and confirm blockers.md line 3 was actually closed.
+- Grep packages/llm-http-proxy/src for responseTransform, text/event-stream, and the event-stream-parser import to verify the detection line, the invocation sites, and that additive surface stayed additive.
+- Read the landed event-stream-parser.ts module and its tests to learn the exact StreamingResult shape before planning anything that consumes it.
+- Re-read interceptor.test.ts's startServer/post/withEntries real-patched-path and fakeReq+emit('data') harnesses to reuse for a benchmark or abort-order spec.
+- Re-run the two-level gate (package tsc/eslint/jest/build, root build+jest with package dist rebuilt first) before planning any code phase.
+- Check git log and packages/llm-http-proxy/package.json scripts/testRegex to see whether any bench infrastructure or live fixtures (src/__fixtures__/) actually landed.
 
-## Decisions needed (horizon 4 cannot avoid these)
-- Log-entry consistency contract: parseCall/redaction/token extraction on pre- vs post-transform bodies per strand.
-- Response delivery mechanism: transformed body on the stream (listener ownership/replay) vs transform only on the buffered copy used for emission.
-- Scope ordering: finish the transformer pipeline (deferred response strand) first, or unblock the vision-track decisions the transformer slice made urgent (benchmark methodology, package identity/publish, OTEL peer-dep).
-- How the rewritten latency bar accommodates transformer work: revised methodology's method and budget numbers.
-- Whether the open package name/version blocker is resolved now that VERSION 0.2.0 exists.
+## Decisions needed (horizon 5 cannot avoid these)
+- Latency-benchmark execution scope: whether to execute the signed-off benchmark in the next horizon, and if so which runner — no *.bench.ts would be picked up by either jest config, so the harness is a standalone script or a jest-compat spec, and the interleaved baseline/interception design must faithfully match the signed-off method without gaming the p50/p99 measurement points.
+- Package identity: whether to finally resolve the horizon-1 name/version/license choice now (VERSION 0.2.0 exists with a real in-repo consumer) to unblock package-identity-and-publish, or defer it yet again.
+- Streaming as public API: whether to export the event-stream parser / StreamingResult from index.ts as first-class 0.2.0 surface, or keep streaming additive-internal — intertwined with the unresolved blockers.md semver-freeze question.
+- OTEL peer-dep posture: whether to make the @opentelemetry/* optional-deps-activation decision now (unblocking the deferred OTEL span-exporter demo) or leave it parked.
+- Which deferred full-objective bar to sequence first — benchmark-execution, OTEL-exporter-demo, or publish-verification — and whether the named streaming residuals (cross-event redaction continuity, caller-visible replay, non-SSE formats) are re-scoped in or declared permanently out.
 
 ## Artifacts to inspect
-- docs/roadmaps/.tmp/llm-http-proxy/stage3-phases.json (kept/deferred phase list)
-- packages/llm-http-proxy/src/interceptor.ts (attachCapture, emitLogEntry, writeWrapper/endWrapper)
-- packages/llm-http-proxy/src/options.ts (landed transform fields)
-- packages/llm-http-proxy/src/provider-parser.ts, index.ts (post-#9 surface)
-- packages/llm-http-proxy/src/interceptor.test.ts (response-path harness)
-- src/app.module.ts (post-#10 lifecycle)
-- docs/roadmaps/llm-http-proxy/{decisions.md, blockers.md, state.md}
+- packages/llm-http-proxy/src/event-stream-parser.ts (landed this horizon — StreamingResult shape, bounded line/event buffer)
+- packages/llm-http-proxy/src/interceptor.ts (rewired attachCapture 'response' callback, SSE detection, completeCapture/emitLogEntry interplay)
+- packages/llm-http-proxy/src/options.ts (InterceptorOptions — whether responseTransform landed additively)
+- packages/llm-http-proxy/src/index.ts (public export surface — did streaming types get exported?)
+- packages/llm-http-proxy/src/interceptor.test.ts (streaming tests + startServer/post/withEntries and fakeReq harnesses)
+- packages/llm-http-proxy/src/__fixtures__/ (only if created — provenance of provider transcripts, live vs doc-lifted)
+- docs/roadmaps/llm-http-proxy/transformer-slice-spec.md (re-pinned §§1-6, per-event ordering clause, cross-event redaction residual)
+- docs/roadmaps/llm-http-proxy/decisions.md (signed-off benchmark methodology + budget numbers lines, and the vision.md reconciliation)
+- docs/roadmaps/llm-http-proxy/blockers.md (line 3 benchmark-methodology closure; still-open status of the others)
+- docs/roadmaps/llm-http-proxy/state.md (this horizon's completed/planned entry)
+- docs/roadmaps/llm-http-proxy/vision.md (reconciled latency bar + remaining still-binding success bars)
+- packages/llm-http-proxy/package.json (scripts + jest testRegex — what a bench harness must conform to)
 
 ## Recommended next-horizon scope
-The next horizon should land the single deferred transformer phase — response-transform-buffered (buffer captured non-streaming responses, run responseTransform before the caller and before JSON.parse in emitLogEntry see the data, passthrough default) — as one contained infrastructure phase, since this horizon's slice-spec ADR already pins its signatures, buffering boundary and out-of-scope list and the landed request strand gives it a mirror implementation to copy. At most one further phase should tackle the decision both strands made urgent: the benchmark-methodology sign-off in blockers.md, which must now budget transformer work against vision.md's obsolete "no work beyond body capture on the request path" bar. Hold off on the OTEL exporter demo (blocked on the @opentelemetry/* peer-dep decision) and on publish verification (blocked on the still-open package name/version decision) until those blockers are resolved; do not attempt the full latency-budget benchmark until the methodology is signed off. Roughly one to two phases.
+The next horizon should be small and decision-driven: first verify this horizon's lands (parser, re-pin, rewire, methodology sign-off) and then execute the now-signed-off latency benchmark — the one deferred item that is unblocked and needs no further decisions — keeping it to one contained phase (harness + run + numbers recorded against the signed-off method, explicitly measuring the streaming response-data-path cost if the methodology requires it). Alongside that, resolve the two pure-decision blockers that gate whole deferred bars and fit without code: package identity (name/version/license) and the OTEL peer-dep posture, decided in decisions.md; that unblocks publish-verification and the OTEL demo for later horizons. Hold off on actually building the OTEL exporter demo and publish verification until those two decisions land, and do not attempt cross-event redaction continuity, caller-visible stream replay, or non-SSE streaming formats unless the user re-scopes them — they are named residuals, not next-horizon work. Roughly one to three phases.

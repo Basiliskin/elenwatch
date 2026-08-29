@@ -27,5 +27,6 @@ export type {
   LlmLogEntry,
   TokenCounter,
   RequestTransformer,
+  ResponseTransformer,
 } from './options';
 export const VERSION = '0.2.0';

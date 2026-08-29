@@ -54,6 +54,28 @@ export interface TokenCounter {
 export type RequestTransformer = (requestBody: string) => string | undefined;
 
 /**
+ * Response-body transformer (landed in horizon 4).
+ *
+ * Receives a captured response body unit as a UTF-8 string and returns the
+ * (possibly different) body to reflect. Must be synchronous. Returning
+ * `undefined` (or the input unchanged) is passthrough.
+ *
+ * Invocation semantics depend on the response path, pinned by
+ * docs/roadmaps/llm-http-proxy/transformer-slice-spec.md:
+ * - Buffered (non-streaming) responses: invoked exactly once over the full
+ *   concatenated capture, at the terminal 'end'.
+ * - SSE event-stream responses (content-type text/event-stream): invoked once
+ *   PER SSE event, over that single event's data payload, as the event is
+ *   parsed. The transform never receives (and never must produce) a
+ *   concatenated stream body, so memory stays bounded per event.
+ *
+ * MUST NOT throw for a well-formed string input; a throwing transform is
+ * caught and treated as passthrough. Per-event redaction runs AFTER this
+ * transform (ADR §3 ordering).
+ */
+export type ResponseTransformer = (responseBody: string) => string | undefined;
+
+/**
  * Interceptor options.
  *
  * `providers` — hostnames (exact or subdomain suffix) or regexes to
@@ -79,6 +101,13 @@ export type RequestTransformer = (requestBody: string) => string | undefined;
  * `requestTransform` — optional request-body transformer. Runs exactly
  * once per request body, between chunk capture and wire forwarding;
  * absent option = synchronous passthrough (unchanged behavior).
+ *
+ * `responseTransform` — optional response-body transformer. For buffered
+ * (non-streaming) responses runs exactly once over the full concatenated
+ * capture at 'end'; for SSE event-stream responses runs once per SSE
+ * event over that event's data payload. Absent option = passthrough
+ * (unchanged behavior). Additive in horizon 4; zero invocation sites
+ * until the response-strand rewire lands.
  */
 export interface InterceptorOptions {
   providers?: (string | RegExp)[];
@@ -88,4 +117,5 @@ export interface InterceptorOptions {
   providerParser?: ProviderParser;
   redaction?: RedactionConfig;
   requestTransform?: RequestTransformer;
+  responseTransform?: ResponseTransformer;
 }

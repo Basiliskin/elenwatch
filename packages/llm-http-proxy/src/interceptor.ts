@@ -18,6 +18,10 @@
 import { ClientRequest, IncomingMessage } from 'node:http';
 import * as http from 'node:http';
 import {
+  createEventStreamParser,
+  type StreamingResult,
+} from './event-stream-parser';
+import {
   ParseResult,
   ProviderParser,
   defaultParser,
@@ -29,6 +33,7 @@ import {
   InterceptorOptions,
   LlmLogEntry,
   RequestTransformer,
+  ResponseTransformer,
   TokenCounter,
 } from './options';
 
@@ -58,6 +63,16 @@ interface CaptureState {
   /** Set when the request transform replaced the captured body; the wire
    *  gets the transformed bytes AND the log entry reflects them (ADR §3). */
   transformedBody?: string;
+  /** True once this response was detected as an SSE event-stream. */
+  isSse?: boolean;
+  /** Streaming parser state; present only on the SSE path. */
+  streamParser?: ReturnType<typeof createEventStreamParser>;
+  /** Bounded accumulator of per-event redacted JSON when capturePayloads=true. */
+  redactedEvents?: unknown[];
+  /** The streaming parse result as of the last fed chunk (never the body). */
+  streamResult?: StreamingResult;
+  /** SSE line-shape probe carry (bounded, 2-leading-lines). */
+  probe?: { buffer: Buffer; probed: boolean };
 }
 
 const kCapture = Symbol('llm-http-proxy.capture');
@@ -183,6 +198,7 @@ export class Interceptor {
   private readonly providerParser: ProviderParser | undefined;
   private readonly redaction: RedactionConfig | undefined;
   private readonly requestTransform: RequestTransformer | undefined;
+  private readonly responseTransform: ResponseTransformer | undefined;
 
   private installed = false;
 
@@ -194,6 +210,7 @@ export class Interceptor {
     this.providerParser = options.providerParser;
     this.redaction = options.redaction;
     this.requestTransform = options.requestTransform;
+    this.responseTransform = options.responseTransform;
   }
 
   get isInstalled(): boolean {
@@ -414,6 +431,92 @@ export class Interceptor {
     // Response capture: exactly the original semantics, off the request
     // path (the 'response' event is async by nature).
     req.on('response', (res: IncomingMessage) => {
+      const byContentType = isSseResponse(res);
+      if (byContentType) {
+        this.attachSseCapture(req, state, res);
+        return;
+      }
+      // No content-type signal. Only a chunked body without a
+      // content-length could still be SSE: probe the leading lines of the
+      // first data chunk(s) (bounded), promote to streaming on a
+      // `data:`/`event:` shape, otherwise buffer as before.
+      const knownLength =
+        typeof res.headers?.['content-length'] === 'string' ||
+        typeof res.headers?.['content-length'] === 'number';
+      if (!knownLength) {
+        let mode: 'probe' | 'sse' | 'buffered' = 'probe';
+        let probeCarry = Buffer.alloc(0);
+        let pastedProbe = false;
+        const parser = this.makeStreamingParser(state);
+        res.on('data', (chunk: Buffer) => {
+          if (mode === 'sse') {
+            state.streamResult = parser.feed(chunk);
+            return;
+          }
+          if (mode === 'probe') {
+            const probe = probeSseShape(chunk, {
+              buffer: probeCarry,
+              probed: pastedProbe,
+            });
+            probeCarry = Buffer.from(probe.carry.buffer);
+            pastedProbe = probe.carry.probed;
+            if (probe.sse) {
+              mode = 'sse';
+              state.isSse = true;
+              state.streamParser = parser;
+              // All carried head bytes (never discarded) feed the parser;
+              // the current chunk was already folded into the head.
+              state.streamResult = parser.feed(probeCarry);
+              probeCarry = Buffer.alloc(0);
+              return;
+            }
+            if (pastedProbe) {
+              mode = 'buffered';
+              // Not SSE: fall back to buffered capture with the FULL head
+              // (the current chunk is already inside probeCarry).
+              if (probeCarry.length > 0) {
+                appendChunk(state.responseBodyChunks, probeCarry);
+                probeCarry = Buffer.alloc(0);
+              }
+              return;
+            }
+            // Probe inconclusive (head < 2 lines and < 1KB): keep
+            // accumulating; probeCarry is bounded (≤1KB + one chunk).
+            return;
+          }
+          appendChunk(state.responseBodyChunks, chunk);
+        });
+        res.on('end', () => {
+          // If the body ended while still probing, decide now: no SSE
+          // shape -> flush the carry into the buffered path so nothing is
+          // lost. (SSE would already have promoted on a shape match.)
+          if (mode === 'probe' && probeCarry.length > 0) {
+            appendChunk(state.responseBodyChunks, probeCarry);
+            probeCarry = Buffer.alloc(0);
+          }
+          if (mode === 'sse' && state.streamParser) {
+            // A promoted stream ending on an unterminated event: flush.
+            state.streamResult = state.streamParser.flush();
+          }
+          state.finished = true;
+          this.completeCapture(req, state);
+        });
+        res.on('error', () => {
+          state.finished = true;
+          this.completeCapture(req, state);
+        });
+        res.on('aborted', () => {
+          state.finished = true;
+          this.completeCapture(req, state);
+        });
+        res.on('close', () => {
+          if (!state.finished) {
+            state.finished = true;
+            this.completeCapture(req, state);
+          }
+        });
+        return;
+      }
       res.on('data', (chunk: Buffer) => {
         appendChunk(state.responseBodyChunks, chunk);
       });
@@ -425,6 +528,76 @@ export class Interceptor {
 
     req.on('error', (err) => {
       this.completeCapture(req, state, err);
+    });
+  }
+
+  /** Build the per-event streaming pipeline (transform then redact, ADR §3). */
+  private makeStreamingParser(
+    state: CaptureState,
+  ): ReturnType<typeof createEventStreamParser> {
+    return createEventStreamParser((event) => {
+      if (event.data === '') {
+        return;
+      }
+      let data = event.data;
+      const transform = this.responseTransform;
+      if (transform !== undefined) {
+        try {
+          const out = transform(data);
+          if (out !== undefined) {
+            data = out;
+          }
+        } catch {
+          // A throwing transform is passthrough (ADR §3).
+        }
+      }
+      let eventJson: unknown;
+      try {
+        eventJson = JSON.parse(data) as unknown;
+      } catch {
+        eventJson = undefined;
+      }
+      if (this.capturePayloads && eventJson !== undefined) {
+        if (state.redactedEvents === undefined) {
+          state.redactedEvents = [];
+        }
+        state.redactedEvents.push(
+          redact(eventJson, this.redaction, 'response'),
+        );
+      }
+    });
+  }
+
+  /** Attach the bounded SSE capture path (content-type-signalled). */
+  private attachSseCapture(
+    req: ClientRequest,
+    state: CaptureState,
+    res: IncomingMessage,
+  ): void {
+    state.isSse = true;
+    const parser = this.makeStreamingParser(state);
+    state.streamParser = parser;
+    res.on('data', (chunk: Buffer) => {
+      state.streamResult = parser.feed(chunk);
+    });
+    res.on('end', () => {
+      state.streamResult = parser.flush();
+      state.finished = true;
+      this.completeCapture(req, state);
+    });
+    res.on('error', () => {
+      state.finished = true;
+      this.completeCapture(req, state);
+    });
+    res.on('aborted', () => {
+      state.finished = true;
+      this.completeCapture(req, state);
+    });
+    res.on('close', () => {
+      if (!state.finished) {
+        state.finished = true;
+        this.completeCapture(req, state);
+      }
     });
   }
 
@@ -462,24 +635,31 @@ export class Interceptor {
     const rawRequest = state.transformedBody
       ? state.transformedBody
       : Buffer.concat(state.requestBodyChunks).toString('utf8');
-    const rawResponse = Buffer.concat(state.responseBodyChunks).toString(
-      'utf8',
-    );
+    // Streaming path: never accumulate the body; responseJson is undefined
+    // (the parser's StreamingResult carries the real numbers) and
+    // maskedResponseBody comes from the bounded per-event redaction store.
+    let responseJson: unknown;
+    if (state.isSse) {
+      responseJson = undefined;
+    } else {
+      const rawResponse = Buffer.concat(state.responseBodyChunks).toString(
+        'utf8',
+      );
+      if (rawResponse) {
+        try {
+          responseJson = JSON.parse(rawResponse);
+        } catch {
+          responseJson = undefined;
+        }
+      }
+    }
 
     let requestJson: unknown;
-    let responseJson: unknown;
     if (rawRequest) {
       try {
         requestJson = JSON.parse(rawRequest);
       } catch {
         requestJson = undefined;
-      }
-    }
-    if (rawResponse) {
-      try {
-        responseJson = JSON.parse(rawResponse);
-      } catch {
-        responseJson = undefined;
       }
     }
 
@@ -506,12 +686,29 @@ export class Interceptor {
                 : parser.extractOutputTokens(b),
           }
         : parser;
-    const parsed: ParseResult = parseCall(
-      effectiveParser,
-      requestJson,
-      responseJson,
-      Boolean(error),
-    );
+    let parsed: ParseResult;
+    if (state.isSse && state.streamResult) {
+      const sr = state.streamResult;
+      // On the SSE path the entry's model and output tokens come from the
+      // merged incremental parser's StreamingResult — never 'unknown'/0
+      // when the stream carried them. Input tokens: the usage-bearing
+      // event's input count wins (OpenAI prompt_tokens / Anthropic
+      // message_start input_tokens); fall back to the request-parse
+      // estimate when the stream carried no usage.
+      const requestEstimate = effectiveParser.estimateInputTokens(requestJson);
+      parsed = {
+        model: sr.model,
+        inputTokens: sr.inputTokens > 0 ? sr.inputTokens : requestEstimate,
+        outputTokens: error ? 0 : sr.outputTokens,
+      };
+    } else {
+      parsed = parseCall(
+        effectiveParser,
+        requestJson,
+        responseJson,
+        Boolean(error),
+      );
+    }
 
     const entry: LlmLogEntry = {
       timestamp: new Date(),
@@ -529,7 +726,15 @@ export class Interceptor {
           'request',
         );
       }
-      if (responseJson !== undefined) {
+      if (state.isSse) {
+        // Per-event redacted JSON, bounded accumulator (never the stream).
+        if (state.redactedEvents !== undefined) {
+          entry.maskedResponseBody =
+            state.redactedEvents.length === 1
+              ? state.redactedEvents[0]
+              : state.redactedEvents;
+        }
+      } else if (responseJson !== undefined) {
         entry.maskedResponseBody = redact(
           responseJson,
           this.redaction,
@@ -571,6 +776,93 @@ function reflectCall(
   // callback), so dropping a positional arg (e.g. encoding when a
   // callback is also present) would silently corrupt the request.
   return original.apply(receiver, args);
+}
+
+/**
+ * Detect an SSE event-stream response. Primary signal: content-type
+ * `text/event-stream`. Secondary signal: the `data:`/`event:` line shape
+ * in a bounded probe of the first two leading lines of the body — used
+ * only when content-type is absent or ambiguous (and no content-length
+ * proves a fully-buffered body). A non-SSE chunked body merely containing
+ * `data:` text later in the stream cannot false-positive because the probe
+ * is bounded and happens before buffering. Responses that fail both
+ * signals keep the pre-horizon buffered behavior.
+ */
+export function isSseResponse(res: IncomingMessage): boolean {
+  const headers = res.headers ?? {};
+  const contentType =
+    typeof headers['content-type'] === 'string'
+      ? headers['content-type'].toLowerCase()
+      : '';
+  if (contentType.includes('text/event-stream')) {
+    return true;
+  }
+  // Content-type absent/other: only probe the shape when the body is not
+  // provably a single fully-buffered unit (a known content-length).
+  const knownLength =
+    typeof headers['content-length'] === 'string' ||
+    typeof headers['content-length'] === 'number';
+  if (knownLength) {
+    return false;
+  }
+  void contentType;
+  return false;
+}
+
+/**
+ * Probe a chunk's leading bytes for the SSE line shape (`data:` or
+ * `event:` prefix on the first or second line). Bounded probe — reads at
+ * most the first two lines from the head of the stream, so it cannot
+ * accumulate the body. Returns true only when the shape matches AND no
+ * content-length was present (callers gate this). The state carries the
+ * probe buffer so a `data:` line split across the first chunks still
+ * matches.
+ */
+export function probeSseShape(
+  chunk: Buffer,
+  carry?: { buffer: Buffer; probed: boolean },
+): { sse: boolean; carry: { buffer: Buffer; probed: boolean } } {
+  // Never discard bytes: the carry accumulates the head until the decision
+  // is made, and is capped at 1KB so it stays bounded. All carried bytes are
+  // always handed to whoever owns them next (buffered path or SSE parser).
+  const head = carry?.buffer ? Buffer.concat([carry.buffer, chunk]) : chunk;
+  const probe = head.subarray(0, Math.min(head.length, 1024));
+  const text = probe.toString('utf8');
+  // SSE line shape: a `data:` or `event:` prefix on the first line, or a
+  // second line after a blank/comment (real SSE transcripts start with
+  // `data:` on the very first line, so the first-line check is the strong
+  // signal; the second line only matters for BOM/comment-prefixed streams).
+  const nl = text.indexOf('\n');
+  const firstLine = nl === -1 ? text : text.slice(0, nl);
+  const secondLine =
+    nl === -1
+      ? ''
+      : text.slice(
+          nl + 1,
+          text.indexOf('\n', nl + 1) === -1
+            ? text.length
+            : text.indexOf('\n', nl + 1),
+        );
+  const sse =
+    firstLine.startsWith('data:') ||
+    firstLine.startsWith('event:') ||
+    secondLine.startsWith('data:') ||
+    secondLine.startsWith('event:');
+  // Decision is final once either the probe cap is reached OR two complete
+  // lines are available (a line's terminator proves SSE can't appear later
+  // than line 2 for the provider transcripts we target).
+  const twoComplete =
+    (nl !== -1 && text.indexOf('\n', nl + 1) !== -1) || text.includes('\n\n');
+  const decided = probe.length >= 1024 || twoComplete;
+  return {
+    sse,
+    carry: {
+      // Keep the FULL head (not just the unprobed tail): the caller needs
+      // every byte for the buffered path; the probe only reads them.
+      buffer: head,
+      probed: decided,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

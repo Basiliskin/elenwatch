@@ -1,0 +1,245 @@
+{
+  "roadmapFile": "docs/roadmaps/llm-http-proxy/horizons/horizon-04-streaming-responses-latency-signoff-roadmap.json",
+  "roadmapTask": "Can the llm-http-proxy module benefit from generator functions or readable/writable streams to improve stability and reduce latency and resources usage? Horizon 4 of the llm-http-proxy project: land real SSE event-stream response support with bounded memory (merged incremental parser + streaming token/model extraction, transformer-slice ADR re-pin for the streaming boundary, additive responseTransform option + constructor capture, and the response-strand rewire with SSE detection/bounded-capture/per-event redaction+transform/single end-entry) and sign off the latency-benchmark methodology + budget numbers in decisions.md (reconciling vision.md's obsolete 'no work beyond body capture on the request path' bar). The benchmark itself is NOT executed this horizon.",
+  "createdAt": "2026-08-28T00:00:00.000Z",
+  "updatedAt": "2026-08-29T00:00:00.000Z",
+  "phases": [
+    {
+      "phaseId": "event-stream-parser-and-streaming-extraction",
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-28T00:00:00.000Z",
+      "completedAt": "2026-08-29T00:00:00.000Z",
+      "gateRun": "cd packages/llm-http-proxy && (npx tsc -p tsconfig.json --noEmit; npm run lint; npm run test; npm run build) && cd ../.. && (npm test; npm run build; npm run lint)",
+      "gradeResult": {
+        "phaseId": "event-stream-parser-and-streaming-extraction",
+        "dimensionScores": [
+          {
+            "dimensionId": "openai-chat-completions-usable-extraction",
+            "score": 10,
+            "pass": true,
+            "evidence": "chatcmpl-shaped transcript, usage-tokens 42/7, usage-wins asserted (7 not 3)"
+          },
+          {
+            "dimensionId": "anthropic-messages-extraction",
+            "score": 10,
+            "pass": true,
+            "evidence": "event:-prefixed message_start/delta/message_stop, model+tokens 25/9, eventCount 6 excludes bare event:/blank"
+          },
+          {
+            "dimensionId": "bounded-non-accumulating-capture",
+            "score": 10,
+            "pass": true,
+            "evidence": "tail raw Buffer + dataLines bounded; 500-event/20-byte feed keeps tail<=1 event, dataLines<=1; per-invocation state"
+          },
+          {
+            "dimensionId": "chunk-boundary-split-integrity",
+            "score": 10,
+            "pass": true,
+            "evidence": "single-decode-at-end; mid-3-byte-CJK split (byte 7 of 12) equals unsplit; every-byte + width sweep [1..127]"
+          },
+          {
+            "dimensionId": "extraction-contract-parity-purity",
+            "score": 10,
+            "pass": true,
+            "evidence": "usage-wins-else ceil(chars/4) (11->3 asserted); pure (deep-equal + byte-identical input); garbage/truncated/zero-data no-throw"
+          },
+          {
+            "dimensionId": "additive-surface-and-gates-green",
+            "score": 9,
+            "pass": true,
+            "evidence": "zero invocation sites; interceptor/options/index untouched; 95+20=115 tests, no skips; tsc/eslint/jest/build + root gates green"
+          }
+        ],
+        "overallPass": true
+      },
+      "notes": "Grading agent initially caught per-chunk decode + fake mid-char split; healerHint applied: tail carried as raw Buffer, single decode per completed line, real mid-char split test (byte 7); re-graded 6/6 pass. Compensation known: delete event-stream-parser.ts + test restores surface."
+    },
+    {
+      "phaseId": "transformer-slice-adr-repin",
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-29T00:00:00.000Z",
+      "completedAt": "2026-08-29T00:00:00.000Z",
+      "gateRun": "doc-only phase: git diff + grep -F verification of verbatim ordering phrases, per-event clause, \u00a75 boundary + capturePayloads policy, \u00a76 re-scoped exclusions, sync signature, named residual; no code gates needed",
+      "gradeResult": {
+        "phaseId": "transformer-slice-adr-repin",
+        "dimensionScores": [
+          {
+            "dimensionId": "buffered-ordering-kept-verbatim",
+            "score": 10,
+            "pass": true,
+            "evidence": "\u00a73 keeps 'the transform runs BEFORE the body reaches the caller... JSON.parse sees the POST-transform body... redaction runs after the transform' word-for-word, marked binding"
+          },
+          {
+            "dimensionId": "per-event-ordering-clause",
+            "score": 10,
+            "pass": true,
+            "evidence": "\u00a73 parallel clause: 'runs per SSE event BEFORE the event's data reaches the caller... JSON.parse/extraction sees the POST-transform per-event body... redaction runs after the transform, per event', bounded-capture cited"
+          },
+          {
+            "dimensionId": "bounded-streaming-boundary-pinned",
+            "score": 10,
+            "pass": true,
+            "evidence": "\u00a75: capturePayloads=false 'responseBodyChunks is never appended on the SSE path'; =true 'per-event redacted JSON... bounded accumulator'; stale 'NOT extended' sentence replaced"
+          },
+          {
+            "dimensionId": "re-scoped-out-of-scope-list",
+            "score": 9,
+            "pass": true,
+            "evidence": "\u00a76 drops blanket streaming exclusion; async/gzip/request-strand stay OUT; SSE per-event IN via scoped qualifiers + \u00a7\u00a71/3/5"
+          },
+          {
+            "dimensionId": "signature-reconciled",
+            "score": 10,
+            "pass": true,
+            "evidence": "sync-only signature kept; per-event invocation pinned; no 'NOT implemented in horizon 3'/'reserved for horizon 4' remnants"
+          },
+          {
+            "dimensionId": "cross-event-redaction-residual-named",
+            "score": 10,
+            "pass": true,
+            "evidence": "Named residual pinned at \u00a73 per-event redaction point, cross-referenced in \u00a76, stated as accepted/binding"
+          }
+        ],
+        "overallPass": true
+      },
+      "notes": "ADR re-pin purely additive; buffered-path ordering kept verbatim with explicit marker; parallel per-event clause; \u00a75 boundary extended with both capturePayloads branches pinned; \u00a76 re-scoped; residual named at \u00a73 and \u00a76. Compensation known: git revert the ADR diff."
+    },
+    {
+      "phaseId": "response-transform-option-and-hook",
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-29T00:00:00.000Z",
+      "completedAt": "2026-08-29T00:00:00.000Z",
+      "gateRun": "cd packages/llm-http-proxy && (npx tsc -p tsconfig.json --noEmit; npm run lint; npm run test; npm run build) && cd ../.. && (npm test; npm run build; npm run lint)",
+      "gradeResult": {
+        "phaseId": "response-transform-option-and-hook",
+        "dimensionScores": [
+          {
+            "dimensionId": "streaming-bounded-capture-contract",
+            "score": 10,
+            "pass": true,
+            "evidence": "ResponseTransformer = (responseBody: string) => string | undefined; doc pins per-SSE-event single-unit invocation, no concatenated stream body, 'memory stays bounded per event'"
+          },
+          {
+            "dimensionId": "adr-repin-conformance",
+            "score": 10,
+            "pass": true,
+            "evidence": "type byte-identical to ADR \u00a72; doc pins redaction-after ordering + undefined-passthrough; no Promise surface"
+          },
+          {
+            "dimensionId": "additive-passthrough-no-regression",
+            "score": 10,
+            "pass": true,
+            "evidence": "optional field; constructor captures absent->undefined passthrough; no test rewritten; 115 tests pass"
+          },
+          {
+            "dimensionId": "zero-invocation-rollback-safety",
+            "score": 10,
+            "pass": true,
+            "evidence": "grep: no responseTransform( call anywhere; only options.ts type+field, constructor capture, index re-export; completeCapture/emitLogEntry untouched"
+          }
+        ],
+        "overallPass": true
+      },
+      "notes": "Deliverable is exactly declared surface: options.ts (type + optional field), interceptor constructor capture mirroring requestTransform, index.ts re-export. Zero invocation sites proven by grep. Compensation known: delete type+field+capture."
+    },
+    {
+      "phaseId": "sse-response-capture-rewire",
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-29T00:00:00.000Z",
+      "completedAt": "2026-08-29T00:00:00.000Z",
+      "gateRun": "cd packages/llm-http-proxy && (npx tsc -p tsconfig.json --noEmit; npm run lint; npm run test; npm run build) && cd ../.. && (npm test; npm run build; npm run lint)",
+      "gradeResult": {
+        "phaseId": "sse-response-capture-rewire",
+        "dimensionScores": [
+          {
+            "dimensionId": "bounded-capture-invariant",
+            "score": 10,
+            "pass": true,
+            "evidence": "attachSseCapture feeds parser only, never responseBodyChunks; 50-event/7-byte + 100-chunk/3-byte tests emit 1 entry, no masked body, real model"
+          },
+          {
+            "dimensionId": "real-metadata-in-entry",
+            "score": 10,
+            "pass": true,
+            "evidence": "SSE branch sources model/outputTokens/inputTokens from StreamingResult; OpenAI 7/11 + Anthropic 25/9 pinned"
+          },
+          {
+            "dimensionId": "per-event-redact-transform-ordering",
+            "score": 10,
+            "pass": true,
+            "evidence": "makeStreamingParser: transform per event BEFORE JSON.parse+redact into redactedEvents; transform-injected api_key masked [REDACTED]"
+          },
+          {
+            "dimensionId": "single-terminal-entry",
+            "score": 10,
+            "pass": true,
+            "evidence": "completeCapture sets state.emitted synchronously before setImmediate; end+error test -> 1 entry"
+          },
+          {
+            "dimensionId": "non-sse-fallback-rollback",
+            "score": 10,
+            "pass": true,
+            "evidence": "probe path preserves ALL bytes on decided non-match (no double-append); >1KB-first-chunk chunked text/plain test asserts intact 1500-x body; content-type-absent SSE promotes via line-shape probe"
+          },
+          {
+            "dimensionId": "gates-green",
+            "score": 10,
+            "pass": true,
+            "evidence": "package tsc/eslint/jest(124)/build + root (5 tests/build/lint) all green; dist rebuilt with rewire; 95 existing tests additive-preserved"
+          }
+        ],
+        "overallPass": true
+      },
+      "notes": "First grade caught probe bug (1KB window dropped/truncated first chunk for content-length-absent responses + double-append); fixed probeSseShape to never discard bytes and decided on 2-lines-or-1KB, fallback appends full carry exactly once, end-flush handles probe-still-open and promoted-stream-underterminated (parser.flush); 2 extra tests added (chunked no-CL fallback >1KB first chunk byte-identical; content-type-absent probe promotion). Compensation known: flip content-type SSE check off -> buffered behavior restored."
+    },
+    {
+      "phaseId": "latency-benchmark-methodology-signoff",
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-29T00:00:00.000Z",
+      "completedAt": "2026-08-29T00:00:00.000Z",
+      "gateRun": "doc-only verification: grep/read of decisions.md (sign-off lines), blockers.md (resolved marker), vision.md (superseded bar cross-reference) + git diff to prove no code touched under packages/",
+      "gradeResult": {
+        "phaseId": "latency-benchmark-methodology-signoff",
+        "dimensionScores": [
+          {
+            "dimensionId": "method-concrete-and-non-gameable",
+            "score": 10,
+            "pass": true,
+            "evidence": "decisions.md records harness (interleaved baseline+intercepted runs over the real patched ClientRequest path), hardware pinning rule, warmup (1000 iters) + total (10000 iters) iteration counts, clocks (process.hrtime.bigint / perf_hooks), measurement points incl. request path (shouldCapture/wrappers/transform) AND response-data path (appendChunk/parse)"
+          },
+          {
+            "dimensionId": "budget-numbers-pinned",
+            "score": 10,
+            "pass": true,
+            "evidence": "p50 <1ms / p99 <2% added latency for buffered non-streaming interception recorded, explicitly including requestTransform+Content-Length work; passing rule for later execution stated verbatim"
+          },
+          {
+            "dimensionId": "response-path-cost-accounted",
+            "score": 10,
+            "pass": true,
+            "evidence": "sign-off names appendChunk-per-data-event + streaming adds per-event parse+count on response-data path as a named measurement point; buffered vs streaming interception comparability explicit in method"
+          },
+          {
+            "dimensionId": "vision-bar-reconciled",
+            "score": 10,
+            "pass": true,
+            "evidence": "explicit sentence: vision bar superseded \u2014 requestTransform+Content-Length now on request path per binding ADR; request-path work stays bounded (kNoCapture cache, no sync-path emission); vision.md bar wording cross-referenced as superseded; no other vision bar altered"
+          },
+          {
+            "dimensionId": "decisions-recorded-blocker-closed",
+            "score": 10,
+            "pass": true,
+            "evidence": "dated decisions.md line records methodology+budget sign-off; blockers.md line 3 marked resolved by decision 2026-08-28 (horizon 4 sign-off); git diff proves no code file changed \u2014 doc-only phase"
+          }
+        ],
+        "overallPass": true
+      },
+      "notes": "Doc-only phase reconciled with the already-present decisions.md/blockers.md entries from previous EXECUTE invocations: the sign-off lines and blockedRN line-3 resolution were already on disk and verified verbatim; ledger row records grade + gate evidence. Compensation known: none (decision-text phase; reverting the decisions.md/blockers.md diff undoes it)."
+    }
+  ]
+}

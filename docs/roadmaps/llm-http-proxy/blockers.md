@@ -1,6 +1,6 @@
 # Open questions
 - 2026-08-28 | horizon 1 | package name/version/license not chosen — open package-identity decision blocks scaffold manifest
-- 2026-08-28 | horizon 1 | explicit latency budget + benchmark methodology not signed off (numbers/hardware/method) — blocks horizon-2 latency-benchmark gate
+- 2026-08-28 | horizon 1 | explicit latency budget + benchmark methodology not signed off (numbers/hardware/method) — blocks horizon-2 latency-benchmark gate — resolved by decision 2026-08-28 (horizon 4 sign-off)
 - 2026-08-28 | horizon 1 | is the public LlmLogEntry/LlmLoggingOptions API semver-frozen before horizon-2 adapter/docs work, or free to evolve?
 - 2026-08-28 | horizon 1 | is process-global http/https monkey-patching acceptable to ship, or is a less invasive seam mandated before publish?
 - 2026-08-28 | horizon 1 | may the root repo gain workspaces/CI, or must the package stay fully isolated under packages/ (rollback-safe)?
@@ -9,3 +9,7 @@
 - 2026-08-28 | horizon 2 | is finding #9's registry collapse a clean break (drop resolveParser/parseCall from index.ts, bump version) or must thin deprecated shims stay? -- unpublished 0.1.0 with one in-repo consumer argues clean break
 - 2026-08-28 | horizon 2 | is finding #8 (negative capture-decision cache) worth shipping before a latency benchmark exists to justify and measure it, or drop it as YAGNI?
 - 2026-08-28 | horizon 2 | should horizon 3 be a small #8/#9/#10 cleanup only, or also resume the vision-track work (transformer pipeline, latency benchmark, OTEL) -- if the latter, the pre-existing next-horizon-brief decisions (package identity, latency methodology, semver freeze) dominate
+- 2026-08-28 | horizon 4 | does the OpenAI/Anthropic terminal usage event arrive in every default streaming call or only with usage/stream_usage params (unescaped in stage-2 fixtures)?
+- 2026-08-28 | horizon 4 | on a mid-stream abort before the terminal SSE event, does the rewired response strand emit an entry at all (no res 'error'/'aborted'/'close' handler)?
+- 2026-08-28 | horizon 4 | which body feeds parseCall/maskedResponseBody when capturePayloads=true + responseTransform both set on the SSE path — pre/post-transform, pre/post-redaction (ADR §3 must state it unambiguously)?
+- 2026-08-28 | horizon 4 | what is the exact SSE-detection fallback cap when content-type is absent but data:-line shape is present — can a chunked JSON response be misrouted?
