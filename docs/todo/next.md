@@ -1,1 +1,1 @@
-/dima-plan-roadmap-ddd-v5 execute docs/roadmaps/llm-http-proxy/horizons/horizon-03-clean-break-knocapture-transformers-roadmap.json
+/dima-plan-roadmap-ddd-v5 execute docs/roadmaps/llm-http-proxy/horizons/horizon-06-publish-verification- otel-demo-roadmap.json

@@ -1,0 +1,728 @@
+{
+  "task": "Horizon 6 of the llm-http-proxy project: land the two unblocked deferred full-objective success bars in one 4-phase horizon — (1) publish verification: `npm publish --dry-run` exits 0 after closing the two known publish-hygiene gaps (the missing package README.md that files[] already references, and the empty author field), and (2) the OTEL span-exporter demo: @opentelemetry/api + @opentelemetry/sdk-trace-base as optional peer deps (peerDependencies + peerDependenciesMeta.optional:true, never in dependencies), a feature-detected span exporter through the existing Logger seam, proven (entry -> span) and proven inert without the peers, with all package and root gates green and zero change to the interceptor request path. The recorded latency miss (request p99 174% of baseline) stays deferred per the user explicit scope choice.",
+  "analysis": {
+    "objective": "Horizon 6 of llm-http-proxy lands the two unblocked full-objective bars in a 3-5 phase envelope: (1) publish verification — `npm publish --dry-run` passing after the two publish-hygiene fixes (the missing README.md that files[] already references, and the empty author field) — and (2) an OTEL span-exporter demo wired through the existing Logger seam that proves opt-in-only activation via feature-detected optional @opentelemetry/* peer deps, with all package and root gates green and zero change to the interceptor request path.",
+    "successDefinition": "`npm publish --dry-run` from packages/llm-http-proxy exits 0 with the packed tarball containing dist/, README.md (created this horizon), and LICENSE, and author set to a non-empty value; @opentelemetry/* appear only as peerDependencies marked optional via peerDependenciesMeta (never in dependencies); a Logger-compatible span exporter ships with one test proving an LlmLogEntry becomes a span when peers are installed and one test proving the exporter is inert and never imported/activated when peers are absent; no span attribute or emitted field leaks raw payload/header data (redaction invariant holds); the horizon keeps 3-5 phases (hard ceiling 7); package build/lint/typecheck/jest and root gates stay green after every phase; no interceptor request-path code changes; the recorded p99 latency miss (173.88% of baseline) is left deferred with no remediation code.",
+    "assumptions": [
+      "npm registry is reachable to install the optional @opentelemetry/* peers locally — needed for the OTEL demo, not for the publish dry-run itself.",
+      "The existing Logger seam signature (entry: LlmLogEntry) => void is sufficient surface for the span exporter; if it is not, extending the seam is in-scope only as the minimal necessary change, because blockers.md line 3 is still open on exactly this question.",
+      "The binding package-identity decision (llm-http-proxy 0.2.0, MIT) stays closed; the author value is chosen without reopening that decision.",
+      "Because npm v7+ auto-installs peerDependencies, peerDependenciesMeta.optional:true is required for opt-in to genuinely be opt-in, and the current dependencies:{} stays empty.",
+      "The OTEL proof targets a minimal span via @opentelemetry/api plus an SDK package — no OTLP exporter or collector is needed to demonstrate the seam.",
+      "\"Gates stay green\" means the package build/lint/typecheck/jest suite (with dist rebuilt before the root consumer re-links) plus root build/jest; the RUN_BENCH-gated benchmark is not part of the default gate path.",
+      "The horizon can execute both bars because both are unblocked (name free per registry 404, OTEL posture recorded) — the user's horizon-scope answer confirms 'Publish + OTEL demo'."
+    ],
+    "risks": [
+      "The recorded request-path p99 miss (173.88% of baseline) stays deferred per the user's explicit scope choice; a reviewer may read the red anchor as a gate failure, so the deferral must be restated in this horizon's scope to avoid it being silently reopened or accidentally 'fixed'.",
+      "blockers.md line 3 is unresolved: the Logger seam is entry-only with no span context or trace state, so writing the first true consumer (the span exporter) may require a seam signature extension — that must be a deliberate decision, not a quiet redefinition of the bar.",
+      "If @opentelemetry/* peers are declared without peerDependenciesMeta.optional:true, npm v7+ auto-installs them for every consumer, turning opt-in into a forced runtime dependency and violating the binding OTEL-posture decision.",
+      "The span exporter is the first real consumer of the Logger seam and could naively copy entry/request fields into span attributes, breaking the package's core redaction invariant ('no raw sensitive value in any emitted log entry or span, including error paths').",
+      "Installing the optional peers requires network/registry access and mutates the package lockfile; if the registry is unreachable, the OTEL bar cannot be proven and the horizon must re-plan (the dry-run itself needs no network).",
+      "`npm publish --dry-run` may surface publish-hygiene issues beyond the two known ones; scope discipline is required — fix only the two named gaps plus anything that actually blocks a clean dry-run, with no gold-plating (repository field, CI, badges).",
+      "The root consumer consumes the package via link:, so any package change needs a dist rebuild before the root gate goes green; an accidental runtime dep would leak OTEL into the root Nest build and turn a green root gate red."
+    ],
+    "outOfScope": [
+      "Latency-regression remediation of the recorded p99 miss (173.88% of baseline) — explicitly deferred by the user's scope choice; benchmark-results.md attributes it to measurement churn (interleaved install/restore), not interceptor code.",
+      "An actual `npm publish` (registry upload) — this horizon only proves publishability via dry-run; the real publish, and the open semver-freeze decision (LlmLogEntry/LlmLoggingOptions) that gates it, are later-horizon work.",
+      "Any change to the interceptor request path (the ClientRequest prototype write/end/on capture patch) — the task forbids it, and the latency miss is not being remediated here.",
+      "Any new feature code beyond the two bars — no new transformers, parsers, redaction rules, or SSE work beyond what exists.",
+      "The named streaming residuals (cross-event redaction continuity, caller-visible stream replay, non-SSE streaming formats) — declared out in the horizon-5 brief and not re-scoped by this horizon.",
+      "OTEL beyond the demo: no OTLP/HTTP/gRPC exporter, no trace propagation or context injection, no consumer-facing exporter docs — the demo proves the seam attaches; nothing more."
+    ],
+    "domainShape": "technical",
+    "domainShapeReason": "The objective is package-publishing machinery and observability wiring (dry-run verification, optional-peer feature-detection, a span exporter on a function-typed Logger seam) — no business entities, rules, or workflows — and vision.md's horizon-1 decision already pins this project 'technical'.",
+    "ubiquitousLanguage": [
+      {
+        "term": "publish verification",
+        "meaning": "the npm publish --dry-run bar that proves the package can be claimed publishable, and which only passes once the two publish-hygiene fixes are landed."
+      },
+      {
+        "term": "publish hygiene",
+        "meaning": "the two known package gaps this horizon fixes: the missing README.md that files[] already references, and the empty author field."
+      },
+      {
+        "term": "Logger seam",
+        "meaning": "the `Logger = (entry: LlmLogEntry) => void` function type in src/logger.ts that consoleLogger, noopLogger, and the new span exporter all plug into."
+      },
+      {
+        "term": "span exporter",
+        "meaning": "the OTEL adapter implementing the Logger seam that turns a fully-assembled LlmLogEntry into a span."
+      },
+      {
+        "term": "opt-in activation",
+        "meaning": "runtime feature-detection: the exporter only activates when the optional @opentelemetry/* peers are installed, never through a hard dependency."
+      },
+      {
+        "term": "optional peer deps",
+        "meaning": "the @opentelemetry/* packages declared as peerDependencies with peerDependenciesMeta.optional:true so consumers without them are never force-installed or crashed."
+      },
+      {
+        "term": "interceptor request path",
+        "meaning": "the ClientRequest prototype write/end/on capture patch, which must not change in this horizon."
+      },
+      {
+        "term": "gates",
+        "meaning": "the package build/lint/typecheck/jest suite plus root build/jest that must stay green after every phase."
+      },
+      {
+        "term": "packaging",
+        "meaning": "the package manifest, README, LICENSE, dist output, and npm publish surface - one of the two subsystems this horizon phases are cut along."
+      }
+    ]
+  },
+  "discoveryFindings": [
+    {
+      "area": "publish-verification",
+      "finding": "package.json files[] references [\"dist\", \"README.md\", \"LICENSE\"] but NO README.md exists in packages/llm-http-proxy — the only README.md in the repo is the root /Users/dimitrykatz/workspace/elenwatch/README.md (the NestJS app readme); LICENSE does exist on disk.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package.json",
+      "implication": "A package README.md must be created at packages/llm-http-proxy/README.md before `npm publish --dry-run` can pass (npm pack will otherwise fail/warn on the missing file referenced by files[]); the root README.md is the app readme and must not be reused or moved."
+    },
+    {
+      "area": "publish-verification",
+      "finding": "author is \"\" (empty string) and there are no repository/bugs/homepage/publishConfig fields; license is MIT, version 0.2.0, description present.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package.json",
+      "implication": "Fill the author field as the second mandated hygiene fix; npm warns on empty author. repository/homepage are optional but should be added for a clean dry-run output, and no version bump is in scope (decisions.md pins 0.2.0; 0.3.0 reserved for breaking)."
+    },
+    {
+      "area": "publish-verification",
+      "finding": "dist/ is gitignored (.gitignore has dist/) and does not exist on disk today; main/module/types/exports all point at dist/{cjs,esm}/*; scripts contain no prepack/prepublishOnly/prepublish, so `npm publish --dry-run` does not auto-build.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/.gitignore",
+      "implication": "The publish gate must run `npm run build` (dual CJS+ESM tsc + postbuild) immediately before `npm publish --dry-run`; consider adding a prepack/prepublishOnly script so dry-run can never validate stale or missing dist."
+    },
+    {
+      "area": "publish-verification",
+      "finding": "npm registry fact already recorded in-repo: `npm view llm-http-proxy` returned HTTP 404 from https://registry.npmjs.org/llm-http-proxy on 2026-08-29 (name free) — recorded in blockers.md line 2, decisions.md line 12, state.md; no lockfile exists anywhere in the repo.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/docs/roadmaps/llm-http-proxy/decisions.md",
+      "implication": "No network re-check is needed for planning; `npm publish --dry-run` (not a real publish) is the verification. README/author/peer changes are additive on 0.2.0 and do not reopen the package-identity decision."
+    },
+    {
+      "area": "otel-peer-posture",
+      "finding": "decisions.md (2026-08-29) binds the OTEL posture: @opentelemetry/* are optional peer dependencies (peerDependencies + peerDependenciesMeta.optional:true), NEVER in dependencies, activated lazily through the existing Logger seam only when peers are installed. Current package.json has NO peerDependencies/optionalDependencies fields at all and dependencies is {}; grep confirms zero @opentelemetry references in any src file or manifest.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package.json",
+      "implication": "The plan adds peerDependencies + peerDependenciesMeta.optional:true as greenfield (nothing to reconcile); the 'never in dependencies' constraint is a recorded, checkable gate; the non-goal of horizon 5 (no activation code) is now reversed by horizon 6 scope."
+    },
+    {
+      "area": "logger-seam",
+      "finding": "The Logger seam is exactly `export type Logger = (entry: LlmLogEntry) => void`; consoleLogger emits JSON.stringify(entry) and noopLogger is a no-op; logger.ts has zero runtime imports (only `import type { LlmLogEntry } from './options'`).",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/logger.ts",
+      "implication": "The OTEL span exporter must implement exactly `(entry: LlmLogEntry) => void` and be passed by the consumer via InterceptorOptions.logger; it must NOT be imported by logger.ts (that module stays framework-free)."
+    },
+    {
+      "area": "logger-seam-invariants",
+      "finding": "logger.test.ts enforces via source-string greps that logger.ts imports no @nestjs/@angular, that the console adapter body never references req./res./getHeader, and that interceptor.ts contains no inline JSON.stringify(entry).",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/logger.test.ts",
+      "implication": "The exporter must live in a separate new module (e.g. src/otel.ts) wired as a Logger-compatible sink; its attribute mapping must copy only entry fields, mirroring the consoleLogger no-raw/no-header invariant, or the existing seam tests (and the redaction invariant) would be violated."
+    },
+    {
+      "area": "redaction-invariant",
+      "finding": "Redaction happens BEFORE the entry is assembled (redact.ts: DEFAULT_SENSITIVE_FIELDS ~60 substring needles, DEFAULT_PLACEHOLDER '[REDACTED]', idempotent, input never mutated); LlmLogEntry = {timestamp, model, inputTokens, outputTokens, callerTrace, url, maskedRequestBody?, maskedResponseBody?, error?} — no headers, and with capturePayloads=false (default) no body fields at all.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/options.ts",
+      "implication": "A span exporter may safely copy url/model/inputTokens/outputTokens/callerTrace into span attributes, timestamp into span start time, and error into span status/events — the entry is already redacted, so as long as the exporter reads only entry fields it cannot leak raw payload or header data into attributes."
+    },
+    {
+      "area": "interceptor-request-path",
+      "finding": "interceptor.ts install() calls patchPrototype(http.ClientRequest) which patches ClientRequest.prototype.write/end (+ conditional .on wrapper) and restore() calls unpatchPrototype; the module header states this prototype patch is the only interception point; interceptor imports consoleLogger as its default emission sink.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/interceptor.ts",
+      "implication": "The horizon must NOT touch interceptor.ts; span emission is purely consumer-side wiring (pass the exporter as the `logger:` option), so the request path and its latency discipline stay untouched."
+    },
+    {
+      "area": "opt-in-test-gating",
+      "finding": "benchmark.test.ts uses the implemented pattern `const RUN_BENCH = process.env.RUN_BENCH === '1'; if (RUN_BENCH) { describe('latency benchmark', benchmarkSuite); } else { describe.skip(...) }` (lines 317-366) so default `npm test` skips the heavy suite in milliseconds.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/benchmark.test.ts",
+      "implication": "OTEL demo tests should reuse the same if/else describe.skip opt-in shape (e.g. a RUN_OTEL env flag) so the default gate stays fast/green while the opt-in run proves the demo end to end."
+    },
+    {
+      "area": "feature-detection-proof",
+      "finding": "typecheck is `tsc -p tsconfig.json --noEmit` (strict, types node+jest, include src/**/*.ts which covers .test.ts) and lint is `eslint \"src/**/*.ts\"` with tseslint recommendedTypeChecked; @opentelemetry/* is not installed today, so any top-level static import of it would fail typecheck/lint/jest when peers are absent.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/tsconfig.json",
+      "implication": "The exporter must feature-detect at runtime via dynamic require/import wrapped in try/catch (never a top-level static import), and @opentelemetry/* must ALSO be added to devDependencies so local typecheck/lint/jest resolve types; the 'inert when peers absent' proof then needs module-mock or subprocess isolation because devDeps make the peers present in the default test run."
+    },
+    {
+      "area": "dependency-lockfile-state",
+      "finding": "The repo has zero lockfiles (glob for *lock* finds none — no package-lock.json/yarn.lock/pnpm-lock.yaml), and horizon-05 gate evidence asserted `git diff -- package.json package-lock.json yarn.lock (empty)` as a doc-only proof; adding devDependencies for @opentelemetry/* will create a package-lock.json under packages/llm-http-proxy.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy",
+      "implication": "The plan must decide commit-vs-ignore for the newly created package-lock.json and update gate expectations: package.json legitimately changes now (peerDependencies + peerDependenciesMeta + devDependencies), so the previous 'no diff in manifests' evidence no longer applies."
+    },
+    {
+      "area": "dual-build-emit",
+      "finding": "build = `tsc -p tsconfig.cjs.json && tsc -p tsconfig.esm.json && npm run postbuild`; scripts/postbuild.mjs writes dist/{cjs,esm}/package.json type markers and verifies the ESM tree is real modules; tsconfig.cjs/esm exclude src/**/*.test.ts; files[] ships the whole dist dir.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/scripts/postbuild.mjs",
+      "implication": "A new src/otel.ts ships automatically in both CJS and ESM dist with zero build-config changes and lands inside the published tarball — consistent with the lazy-opt-in posture (module present but inert without peers)."
+    },
+    {
+      "area": "root-consumption",
+      "finding": "Root package.json is private:true with NO workspaces field and consumes the package via `\"llm-http-proxy\": \"link:packages/llm-http-proxy\"`; the two-level gate from horizon-05 status.json is package typecheck/lint/test/build then root `nest build` + jest (5/5) + lint.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/package.json",
+      "implication": "peerDependenciesMeta.optional has no effect on the root link: consumer (no peer install is forced), root needs no @opentelemetry/* additions, and the root half of the two-level gate stays unchanged."
+    },
+    {
+      "area": "jest-config",
+      "finding": "Jest config lives in package.json (rootDir \".\", testRegex \"(/__tests__/.*|(\\.|/)(test|spec))\\.ts$\", ts-jest with tsconfig.json, testEnvironment node, `npm test` = `jest --passWithNoTests`); a previous horizon explicitly stated 'do NOT touch either jest config'.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package.json",
+      "implication": "A new src/otel.test.ts matches the existing testRegex with zero jest-config changes, preserving the precedent of leaving both jest configs untouched."
+    },
+    {
+      "area": "runtime-constraints",
+      "finding": "engines is node >=18; there is no packageManager field; npm is the established package gate runner (npm run typecheck/lint/test/build per horizon-05 gateRun) and npm view was used for registry facts; index.ts exports VERSION = '0.2.0' matching package.json.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/index.ts",
+      "implication": "Keep npm for all package gates; no engines/packageManager change needed; dynamic import of @opentelemetry/* is available on node>=18; VERSION stays 0.2.0 (index.ts doc comment already names the OTEL span exporter as a later-horizon logger-seam consumer)."
+    }
+  ],
+  "requiredMaterials": [
+    {
+      "name": "@opentelemetry/api package",
+      "kind": "api",
+      "whyNeeded": "The trace API the span exporter calls at runtime (trace.getTracer, creating/ending spans); it must be installed so the module can be written against real types and proven to turn an LlmLogEntry into a span, and it must be declared as an optional peer dependency (peerDependencies + peerDependenciesMeta.optional:true) so the exporter can feature-detect it at runtime instead of importing it statically.",
+      "acquisitionNote": "Run `npm install --save-dev @opentelemetry/api` inside /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy (pulls from registry.npmjs.org), then add the same version range to peerDependencies with peerDependenciesMeta.optional:true; keep it out of dependencies{}."
+    },
+    {
+      "name": "@opentelemetry/sdk-trace-base package",
+      "kind": "api",
+      "whyNeeded": "Provides the SDK surface the demo must prove against — a TracerProvider (BasicTracerProvider) to register the exporter and the InMemorySpanExporter used to read back a recorded span in tests; no OTLP/HTTP/gRPC exporter or collector is used, and without this package 'an LlmLogEntry becomes a span' cannot be demonstrated.",
+      "acquisitionNote": "Run `npm install --save-dev @opentelemetry/sdk-trace-base` inside /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy; declare it as an optional peer dependency alongside @opentelemetry/api (never in dependencies). It is the only SDK package required — no third @opentelemetry/* package is needed for this demo."
+    },
+    {
+      "name": "Mutually compatible @opentelemetry/api ↔ sdk-trace-base version range",
+      "kind": "knowledge",
+      "whyNeeded": "OTEL SDK packages have strict version coupling to the api package; declaring an incompatible api range in peerDependencies would fail npm peer resolution (or the dry-run tarball's peer metadata) and break the green-install gate, so the concrete version range for both peerDependencies entries must be externally verified before it is written into package.json.",
+      "acquisitionNote": "At install time, query the registry (`npm view @opentelemetry/sdk-trace-base@<latest> peerDependencies dependencies`) to read the api version range it requires, then pin both @opentelemetry/api and @opentelemetry/sdk-trace-base in peerDependencies/devDependencies to that mutually compatible range."
+    },
+    {
+      "name": "Canonical author identity for the package.json author field",
+      "kind": "knowledge",
+      "whyNeeded": "The publish-hygiene bar requires filling the currently empty author field with a non-empty value, and the value must not reopen the pinned package-identity decision (llm-http-proxy 0.2.0, MIT); no maintainer name/email/URL is recorded anywhere in the repo, so the concrete string is an external unknown that only the project owner can supply.",
+      "acquisitionNote": "Ask the project owner/maintainer for the canonical author string (e.g. \"Name <email>\" or GitHub handle) and write it into the author field of /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package.json."
+    },
+    {
+      "name": "Reachability of the npm registry (registry.npmjs.org)",
+      "kind": "api",
+      "whyNeeded": "Installing the two @opentelemetry/* packages as devDependencies (and verifying npm's peer-dependency resolution against them) requires live registry access; the publish dry-run itself is network-independent, but the OTEL demo bar cannot be proven — and its opt-in/typecheck/lint/jest gates cannot go green — if the packages cannot be installed.",
+      "acquisitionNote": "Before the install phase, verify reachability from /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy via `npm ping` or `npm view @opentelemetry/api version`; if the registry is unreachable, the OTEL bar must be re-planned (per stage1-analysis.json risk: re-plan rather than proceed)."
+    }
+  ],
+  "phases": [
+    {
+      "id": "add-package-readme-and-author",
+      "order": 0,
+      "name": "Add package README and author field",
+      "goal": "Close the two known publish-hygiene gaps in the llm-http-proxy package so `npm publish --dry-run` exits 0: create the package README.md that package.json's files[] already references but that does not exist on disk, and fill the empty author field.",
+      "rationale": "`npm publish --dry-run` cannot pass while the manifest's files[] lists a README.md that is missing, and an empty author field is the second known gap. Closing both is the smallest dependency-closed slice: it alone makes the publish-verification bar pass, with no dependency on the OpenTelemetry work.",
+      "filesAffected": [
+        "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/README.md",
+        "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package.json"
+      ],
+      "changes": [
+        "Create packages/llm-http-proxy/README.md containing exactly: the package name \"llm-http-proxy\", a one-line purpose, the install command `npm install llm-http-proxy`, and a basic usage snippet showing how to pass a custom logger via `InterceptorOptions.logger` (the `logger:` option). Do NOT document the OpenTelemetry exporter, and do NOT reuse, copy, or move the root /Users/dimitrykatz/workspace/elenwatch/README.md (that is the NestJS app readme).",
+        "Set package.json `author` to \"Dimitry Katz <dimitry.kazt@gmail.com>\" (from the local git identity, confirmed by the user at the alignment preview), replacing the current empty string — without changing name, version (0.2.0), or license (MIT).",
+        "Run `npm run build` first (dist/ is gitignored and absent, and there is no prepack script, so a dry-run would otherwise validate stale or missing dist), then `npm publish --dry-run` and confirm exit code 0 with README.md, LICENSE, and dist/ listed in the tarball.",
+        "Run the package gates `npm run typecheck && npm run lint && npm test` to confirm nothing regressed."
+      ],
+      "boundedContext": "packaging",
+      "layer": "interface",
+      "blastRadius": "small",
+      "inputs": [
+        "packages/llm-http-proxy/package.json — files[] lists \"README.md\" but no such file exists on disk; author is an empty string",
+        "The root /Users/dimitrykatz/workspace/elenwatch/README.md — the NestJS app readme, must NOT be reused or moved",
+        "Local git identity \"Dimitry Katz <dimitry.kazt@gmail.com>\" — the author value, chosen without reopening the pinned package-identity decision",
+        "packages/llm-http-proxy/LICENSE — already on disk and already shipped by files[]; unchanged"
+      ],
+      "expectedResult": "The package's two known publish-hygiene gaps are closed: packages/llm-http-proxy/README.md exists with the mandated content, package.json author is non-empty, and `npm run build && npm publish --dry-run` exits 0 with README.md, LICENSE, and dist/ in the tarball.",
+      "dependsOn": [],
+      "compensation": "Revert by deleting packages/llm-http-proxy/README.md and setting author back to \"\"; the dry-run gate then fails again, exactly as before.",
+      "rubric": [
+        {
+          "id": "readme-exists-with-mandated-content",
+          "label": "README.md exists with the mandated content",
+          "ruleStatement": "The llm-http-proxy package has its own README.md on disk whose content names the package, shows the install command and the `logger:` usage option, does not document the OpenTelemetry exporter, and is not a copy, move, or symlink of the root NestJS app readme.",
+          "passCriteria": [
+            "From the repo root, `test -f packages/llm-http-proxy/README.md` exits 0.",
+            "From the repo root, `grep -q 'llm-http-proxy' packages/llm-http-proxy/README.md` exits 0 (the readme names the package).",
+            "From the repo root, `grep -q 'npm install llm-http-proxy' packages/llm-http-proxy/README.md` exits 0 (install command present).",
+            "From the repo root, `grep -q 'logger:' packages/llm-http-proxy/README.md` exits 0 (usage snippet shows the `logger:` option).",
+            "From the repo root, `grep -qi 'opentelemetry' packages/llm-http-proxy/README.md` exits 1 (the OTEL exporter is not documented).",
+            "From the repo root, `cmp -s packages/llm-http-proxy/README.md README.md` exits 1 (the package readme is not identical to the root NestJS app readme)."
+          ],
+          "failureExamples": [
+            "README.md is missing on disk, so `test -f` exits 1.",
+            "README.md is byte-identical to the root readme (`cmp -s` exits 0) or is a symlink to it.",
+            "README.md omits the package name, the install command, or the `logger:` usage snippet.",
+            "README.md mentions the OpenTelemetry exporter, so the grep exits 0."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "author-field-set-to-pinned-value",
+          "label": "author field set to the pinned value",
+          "ruleStatement": "package.json's author field is exactly the pinned non-empty value, and the manifest's identity fields (name, version, license) are unchanged by this phase.",
+          "passCriteria": [
+            "From the repo root, `node -p \"require('./packages/llm-http-proxy/package.json').author\"` prints `Dimitry Katz <dimitry.kazt@gmail.com>`.",
+            "From the repo root, `node -p \"require('./packages/llm-http-proxy/package.json').name\"` prints `llm-http-proxy`.",
+            "From the repo root, `node -p \"require('./packages/llm-http-proxy/package.json').version\"` prints `0.2.0`.",
+            "From the repo root, `node -p \"require('./packages/llm-http-proxy/package.json').license\"` prints `MIT`."
+          ],
+          "failureExamples": [
+            "author is still the empty string \"\" or differs from `Dimitry Katz <dimitry.kazt@gmail.com>`.",
+            "name, version, or license were changed from `llm-http-proxy` / `0.2.0` / `MIT`."
+          ],
+          "minScore": 9
+        },
+        {
+          "id": "dry-run-publish-exits-zero",
+          "label": "npm publish --dry-run exits 0 with the full tarball",
+          "ruleStatement": "After a fresh build, `npm publish --dry-run` exits 0, the tarball it lists contains README.md, LICENSE, and the built dist/, and a second consecutive dry-run repeats the same result.",
+          "passCriteria": [
+            "Inside packages/llm-http-proxy, `npm run build` exits 0.",
+            "Inside packages/llm-http-proxy, `npm publish --dry-run` exits 0.",
+            "The `npm publish --dry-run` output's tarball contents list README.md, LICENSE, and files under dist/.",
+            "Run `npm publish --dry-run` a second time with no changes — it exits 0 again (repeatable, non-mutating)."
+          ],
+          "failureExamples": [
+            "`npm publish --dry-run` exits nonzero (e.g., ENOENT for the missing README or missing/stale dist).",
+            "The tarball listing omits README.md, LICENSE, or dist/ — e.g., dist/ is absent because build was skipped.",
+            "A second consecutive dry-run exits differently from the first (non-repeatable)."
+          ],
+          "minScore": 9
+        },
+        {
+          "id": "package-gates-stay-green",
+          "label": "Package gates stay green",
+          "ruleStatement": "The change introduces no regression in the package's own checks: typecheck, lint, and the jest suite all pass against the modified package.",
+          "passCriteria": [
+            "Inside packages/llm-http-proxy, `npm run typecheck` exits 0.",
+            "Inside packages/llm-http-proxy, `npm run lint` exits 0.",
+            "Inside packages/llm-http-proxy, `npm test` exits 0 with the full suite passing."
+          ],
+          "failureExamples": [
+            "`npm run typecheck`, `npm run lint`, or `npm test` exits nonzero, or jest reports failing tests."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "change-scoped-and-revertible",
+          "label": "Change is scoped and revertible",
+          "ruleStatement": "The phase touches exactly the two declared files and nothing else, and its compensation (delete README.md, empty author) is a real revert that restores the prior failing dry-run state.",
+          "passCriteria": [
+            "From the repo root, `git status --porcelain` shows exactly `?? packages/llm-http-proxy/README.md` and `M packages/llm-http-proxy/package.json` — no other files.",
+            "From the repo root, `git diff packages/llm-http-proxy/package.json` changes only the `author` line (no name/version/license/dependencies edits).",
+            "Apply the compensation — delete packages/llm-http-proxy/README.md and set author back to \"\" — then inside packages/llm-http-proxy `npm publish --dry-run` exits nonzero again, proving the revert restores the prior state."
+          ],
+          "failureExamples": [
+            "`git status --porcelain` shows unrelated modified/untracked files beyond the two declared paths.",
+            "`git diff packages/llm-http-proxy/package.json` edits keys other than author (version bump, dependency changes).",
+            "Reverting the README and author still leaves `npm publish --dry-run` at exit 0, meaning the fix is not what holds the gate."
+          ],
+          "minScore": 7
+        }
+      ],
+      "healerHint": "The most likely failure is an ordering or content slip — `npm publish --dry-run` run before `npm run build` (so dist/ is missing from the tarball) or a README that is the root NestJS readme or missing one of the three required strings (`llm-http-proxy`, `npm install llm-http-proxy`, `logger:`) — so run `npm run build` first and grep the README for those three strings before re-running the dry-run."
+    },
+    {
+      "id": "add-otel-optional-peer-deps",
+      "order": 1,
+      "name": "Add optional OTEL peer dependencies",
+      "goal": "Make @opentelemetry/api and @opentelemetry/sdk-trace-base resolvable for local typecheck/lint/jest while keeping them strictly optional for consumers, without committing a lockfile (the repo deliberately keeps zero lockfiles everywhere).",
+      "rationale": "The OTEL span exporter must compile against real @opentelemetry/* types locally, but the packages must never be hard dependencies — consumers without them must not be force-installed or crashed. Declaring them as optional peerDependencies (peerDependenciesMeta.optional:true) plus devDependencies is the only way to get both properties at once. The install will create a package-lock.json under packages/llm-http-proxy, but the repo has a deliberate zero-lockfile convention (every previous horizon's gate evidence asserted no lockfile existed), so the new lockfile is gitignored, not committed; the pinned peer ranges in package.json preserve reproducibility.",
+      "filesAffected": [
+        "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package.json",
+        "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/.gitignore",
+        "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package-lock.json (created by install, then gitignored)"
+      ],
+      "changes": [
+        "Verify npm registry reachability from packages/llm-http-proxy with `npm ping` (or `npm view @opentelemetry/api version`); if unreachable, stop — the OTEL bar cannot be proven (the publish dry-run itself is network-independent).",
+        "Read the required api range: `npm view @opentelemetry/sdk-trace-base@latest peerDependencies` and confirm the @opentelemetry/api range it needs, so the peer ranges written below are mutually compatible.",
+        "Run `npm install --save-dev @opentelemetry/api @opentelemetry/sdk-trace-base` inside packages/llm-http-proxy so the local typecheck/lint/jest resolve the peer types.",
+        "Hand-edit package.json: add a `peerDependencies` block declaring both @opentelemetry/* with the verified mutually compatible range (e.g. ^1.0.0) and a `peerDependenciesMeta` block marking each `optional: true`; leave `dependencies` exactly as `{}` — OTEL must never appear there.",
+        "Add the line \"package-lock.json\" to packages/llm-http-proxy/.gitignore so the newly created lockfile stays out of git, preserving the repo's deliberate zero-lockfile convention (package.json's pinned ranges carry reproducibility).",
+        "Run the full package gate `npm run typecheck && npm run lint && npm test && npm run build` and re-run `npm publish --dry-run` (it must still exit 0 with the new peer metadata in the manifest)."
+      ],
+      "boundedContext": "packaging",
+      "layer": "infrastructure",
+      "blastRadius": "small",
+      "inputs": [
+        "packages/llm-http-proxy/package.json — current manifest with dependencies {} and no peerDependencies/peerDependenciesMeta",
+        "npm registry reachability check (npm ping / npm view @opentelemetry/api version)",
+        "Mutually compatible @opentelemetry/api ↔ sdk-trace-base version range from `npm view @opentelemetry/sdk-trace-base@latest peerDependencies`",
+        "Phase-0 publish-hygiene state — dry-run green without peers"
+      ],
+      "expectedResult": "packages/llm-http-proxy/package.json declares @opentelemetry/api and @opentelemetry/sdk-trace-base as optional peerDependencies (peerDependenciesMeta.optional:true) and as devDependencies, with `dependencies` still {}, the generated package-lock.json gitignored rather than committed, and typecheck/lint/test/build plus `npm publish --dry-run` all green.",
+      "dependsOn": [
+        "add-package-readme-and-author"
+      ],
+      "compensation": "Revert by removing the peerDependencies/peerDependenciesMeta blocks and the two devDependencies entries from package.json, removing the package-lock.json line from .gitignore, deleting node_modules and the generated package-lock.json, and re-running npm install to restore the prior state.",
+      "rubric": [
+        {
+          "id": "optional-peer-declarations",
+          "label": "Optional peer declarations present",
+          "ruleStatement": "Both OTEL packages are declared as peerDependencies and each is marked optional via peerDependenciesMeta, so consumers without them are never force-installed or crashed at require-time.",
+          "passCriteria": [
+            "In /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package.json, the `peerDependencies` object contains exactly the keys `@opentelemetry/api` and `@opentelemetry/sdk-trace-base`.",
+            "The `peerDependenciesMeta` object has an entry for each of those two names, and each entry's `optional` field is exactly `true`.",
+            "Run `node -e \"const p=require('/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package.json');console.log(Object.entries(p.peerDependencies).every(([k])=>(p.peerDependenciesMeta||{})[k]?.optional===true))\"` from /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy and confirm it prints `true`.",
+            "Run `npm install` in /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy and confirm it exits 0 with no 'missing peer' error for either @opentelemetry/* package."
+          ],
+          "failureExamples": [
+            "Only `@opentelemetry/sdk-trace-base` appears in `peerDependencies`; `@opentelemetry/api` is missing.",
+            "`peerDependenciesMeta` is absent or the `optional` flag is `false` or missing, so a consumer install attempts to auto-install the peers.",
+            "`npm install` in the package directory warns 'Unmet peer dependency @opentelemetry/api'."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "no-hard-dependency",
+          "label": "OTEL never a hard dependency",
+          "ruleStatement": "`dependencies` remains exactly `{}` — @opentelemetry/* must never appear there. This invariant is non-negotiable: a consumer without the optional peers must not be force-installed, and the phase must not silently become a hard-dependency change.",
+          "passCriteria": [
+            "In /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package.json, the value of the `dependencies` key is exactly the empty object `{}`.",
+            "Searching package.json for `@opentelemetry` finds matches only under `peerDependencies`, `peerDependenciesMeta`, and `devDependencies` — never under `dependencies`.",
+            "Run `npm ls --omit=dev` in /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy and confirm neither @opentelemetry/* package appears in the production dependency tree.",
+            "A hypothetical `npm install --production` in the package directory would not install either @opentelemetry/* package."
+          ],
+          "failureExamples": [
+            "`dependencies` reads `{\"@opentelemetry/api\": \"^1.0.0\"}`.",
+            "`npm ls --omit=dev` lists @opentelemetry/sdk-trace-base as a production dependency.",
+            "`npm publish --dry-run` output shows `dependencies` containing an @opentelemetry/* entry."
+          ],
+          "minScore": 10
+        },
+        {
+          "id": "pinned-compatible-ranges",
+          "label": "Pinned, mutually compatible ranges",
+          "ruleStatement": "The declared ranges are explicit pinned semver ranges (never `*` or `latest`), the @opentelemetry/api range satisfies what the declared @opentelemetry/sdk-trace-base range requires as its own peer, and the devDependencies entries mirror the peer ranges so the locally typechecked version and the consumer-facing contract cannot diverge.",
+          "passCriteria": [
+            "Both `peerDependencies` entries are explicit caret ranges (e.g. `^1.0.0`); neither is `*`, `latest`, `x`, or a bare major like `1`.",
+            "Run `npm view @opentelemetry/sdk-trace-base@<declared-range> peerDependencies` and confirm the `@opentelemetry/api` range it reports is satisfied by the api range declared in package.json (e.g. both `^1.0.0`).",
+            "Each @opentelemetry/* name appears in `devDependencies` with the same range string as its `peerDependencies` entry in /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package.json."
+          ],
+          "failureExamples": [
+            "`peerDependencies` contains `\"@opentelemetry/api\": \"*\"` or `\"latest\"`, which is not a pinned reproducible range.",
+            "Declared api range is `^1.0.0` but `npm view @opentelemetry/sdk-trace-base@latest peerDependencies` reports `@opentelemetry/api: ^1.8.0`, so `^1.0.0` does not satisfy it.",
+            "devDependencies pins `^1.8.0` while peerDependencies says `^1.0.0`, so local typecheck/jest run against a version consumers are never offered."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "zero-lockfile-convention",
+          "label": "Zero-lockfile convention preserved",
+          "ruleStatement": "The generated package-lock.json exists on disk (proving the install actually ran) but is gitignored and untracked, so the repo's deliberate zero-lockfile convention holds and reproducibility rests on the pinned ranges in package.json.",
+          "passCriteria": [
+            "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/.gitignore contains a line matching `package-lock.json`.",
+            "Run `git ls-files /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy` and confirm no `package-lock.json` is listed.",
+            "Run `git check-ignore /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package-lock.json` and confirm it prints the path (git treats it as ignored).",
+            "The file /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package-lock.json exists on disk."
+          ],
+          "failureExamples": [
+            "`git ls-files` lists `package-lock.json`, meaning the lockfile was committed.",
+            "The .gitignore line is missing and `git status` shows `package-lock.json` as a new untracked file.",
+            "No package-lock.json exists on disk at all, meaning the install never ran and local peer resolution is unproven."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "gates-and-publish-green",
+          "label": "Package gates and publish dry-run stay green",
+          "ruleStatement": "The manifest change breaks nothing and still proves publishability: the full package gate exits 0 and `npm publish --dry-run` exits 0 with the new peer metadata visible in the published manifest.",
+          "passCriteria": [
+            "Run `npm run typecheck && npm run lint && npm test && npm run build` in /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy and confirm the whole chain exits 0.",
+            "Run `npm publish --dry-run` in /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy and confirm it exits 0.",
+            "The `npm publish --dry-run` output prints a manifest that includes a `peerDependencies` object with both @opentelemetry/* entries and the `peerDependenciesMeta.optional` flags.",
+            "Run `npm run typecheck` and `npm run build` in the repository root (/Users/dimitrykatz/workspace/elenwatch) and confirm both exit 0."
+          ],
+          "failureExamples": [
+            "`npm run typecheck` fails with 'Cannot find module @opentelemetry/api', showing the packages were never installed for local resolution.",
+            "`npm publish --dry-run` exits non-zero (e.g. malformed peer metadata or the README.md referenced by `files[]` still missing).",
+            "The dry-run's printed manifest omits `peerDependencies` and `peerDependenciesMeta` entirely, so the published artifact would not carry the optional-peer contract.",
+            "Root `npm run build` fails after the package.json edit."
+          ],
+          "minScore": 7
+        }
+      ],
+      "healerHint": "Most likely failure: the executor stops after `npm install --save-dev` — which never writes peerDependencies — so OTEL ends up only in devDependencies (or, worse, in dependencies) with no optional-peer block; re-open package.json, add the `peerDependencies` + `peerDependenciesMeta.optional:true` block, leave `dependencies` as `{}`, then re-run the gate and dry-run."
+    },
+    {
+      "id": "add-otel-span-exporter-module",
+      "order": 2,
+      "name": "Add OTEL span exporter module",
+      "goal": "Write src/otel.ts: a Logger-seam-compatible span exporter that lazily attaches to OpenTelemetry only when the optional peer is installed, copies only LlmLogEntry fields into the span, and is a no-op when the peer is absent; re-export it from the package's main entry so a real consumer can reach it.",
+      "rationale": "The package's Logger seam is just the function type `(entry: LlmLogEntry) => void`, and this exporter is its first real consumer. A top-level static import of any @opentelemetry/* package would make typecheck/lint/jest fail for anyone without the peers, so the peer is resolved at runtime via a try/catch require; and only entry fields may be copied into span attributes, preserving the package's core no-raw-data redaction invariant. The re-export from src/index.ts is what makes the demo a consumer-reachable extension interface (the package's exports map exposes only the root entry); without it a consumer could only deep-import the module. The user endorsed keeping this re-export at the alignment preview.",
+      "filesAffected": [
+        "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/otel.ts",
+        "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/index.ts"
+      ],
+      "changes": [
+        "Create src/otel.ts exporting a Logger-compatible function (e.g. `export const otelSpanLogger: Logger`) that satisfies the `(entry: LlmLogEntry) => void` seam from src/logger.ts, using only a type-only import (`import type`) of Logger/LlmLogEntry so nothing from the package's own seam becomes a runtime dependency.",
+        "Feature-detect the peer once at module load: `try { const { trace } = require('@opentelemetry/api') as typeof import('@opentelemetry/api'); ... } catch { /* peers absent → inert */ }` — never a top-level static import. Add a scoped `// eslint-disable-next-line @typescript-eslint/no-var-requires` comment above the require (the recommendedTypeChecked lint config flags `require`), and cast the require result to the imported type so the no-unsafe-* lint rules do not fire on `any`.",
+        "When the peer is present, have the exported function create a span (e.g. name 'llm-http-proxy.llm-call') via `trace.getTracer('llm-http-proxy')`, set the span start time from `entry.timestamp`, copy ONLY entry fields into span attributes (model, inputTokens, outputTokens, callerTrace, url; maskedRequestBody/maskedResponseBody only when present on the entry; on `entry.error` set an error status and record the message), and end the span. Never read the request/response object or headers.",
+        "When the peer is absent, the exported function must be a no-op that never throws.",
+        "Re-export `otelSpanLogger` from src/index.ts so consumers can import it from the package root and pass it as the `logger:` option.",
+        "Run `npm run typecheck && npm run lint && npm test && npm run build` — all must stay green; the dual CJS+ESM build picks up the new module with zero build-config changes (the ESM dist's bare `require` throws and is safely caught, making the ESM path inert — the acceptable safe failure mode for the demo)."
+      ],
+      "boundedContext": "logger seam",
+      "layer": "infrastructure",
+      "blastRadius": "medium",
+      "inputs": [
+        "src/logger.ts — `export type Logger = (entry: LlmLogEntry) => void`, the seam the exporter must implement",
+        "src/options.ts — the LlmLogEntry fields the exporter may read (timestamp, model, inputTokens, outputTokens, callerTrace, url, maskedRequestBody?, maskedResponseBody?, error?)",
+        "@opentelemetry/api installed locally (phase 1) — resolved lazily at runtime via try/catch require, never a top-level static import",
+        "The redaction invariant: only entry fields may be copied into span attributes; never the request/response object or headers"
+      ],
+      "expectedResult": "src/otel.ts exists and exports a Logger-compatible span exporter, re-exported from src/index.ts, that lazy-loads @opentelemetry/api via try/catch require, emits a span from LlmLogEntry fields only, and is a non-throwing no-op when the peer is absent; the package typecheck/lint/test/build gates pass.",
+      "dependsOn": [
+        "add-otel-optional-peer-deps"
+      ],
+      "compensation": "Revert by deleting src/otel.ts and removing the otelSpanLogger re-export from src/index.ts.",
+      "rubric": [
+        {
+          "id": "seam-contract",
+          "label": "Exporter satisfies the Logger seam and is consumer-reachable",
+          "ruleStatement": "The exported function is a plain `(entry: LlmLogEntry) => void` compatible with the existing Logger type, its only imports from the package's own modules are type-only, and it is re-exported from the package root so a consumer can import it without a deep path.",
+          "passCriteria": [
+            "`src/otel.ts` declares `export const otelSpanLogger: Logger = (entry: LlmLogEntry): void => {...}` — the export is typed as the existing `Logger` and its signature is exactly `(entry: LlmLogEntry) => void`, not async and with no extra parameters.",
+            "Running `grep -n \"import.*from './logger'\" src/otel.ts` and `grep -n \"import.*from './options'\" src/otel.ts` shows only `import type` lines — no value import from the package's own seam becomes a runtime dependency.",
+            "`src/index.ts` contains `export { otelSpanLogger } from './otel';`, so `import { otelSpanLogger } from 'llm-http-proxy'` resolves from the package root (verified against the exports map in `package.json`)."
+          ],
+          "failureExamples": [
+            "The exported function returns a `Promise` or takes a second parameter, so it is no longer assignable to `Logger` and the interceptor's `this.logger(entry)` call site would typecheck-fail.",
+            "`src/otel.ts` value-imports `Logger`/`LlmLogEntry` from `./logger`/`./options`, adding a runtime dependency on the package's own seam.",
+            "`otelSpanLogger` is only reachable via a deep import like `llm-http-proxy/dist/esm/otel.js` because no re-export was added to `src/index.ts`."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "opt-in-only-activation",
+          "label": "Peer is runtime feature-detected, never a hard dependency",
+          "ruleStatement": "OpenTelemetry stays optional: the peer is resolved lazily once at module load via a try/catch `require` — never a top-level static import — and when the peer is absent the exported function is a non-throwing no-op that never touches OTEL.",
+          "passCriteria": [
+            "`grep -n \"@opentelemetry\" src/otel.ts` shows the peer referenced only inside a `require(...)` call or an `import type` used as a cast — there is no top-level `import ... from '@opentelemetry/api'` statement in the file.",
+            "The `require('@opentelemetry/api')` sits inside a `try { ... } catch { ... }` block, and the line immediately above it carries the literal comment `// eslint-disable-next-line @typescript-eslint/no-var-requires`.",
+            "The catch branch only records that the peer is absent (an inert-state flag or equivalent) — it contains no `throw`, no `console.error`, and no call into any OTEL API.",
+            "With `node_modules/@opentelemetry` temporarily removed (or the require forced to fail), calling `otelSpanLogger(entry)` twice returns without throwing on both calls and no span is emitted."
+          ],
+          "failureExamples": [
+            "A top-level `import { trace } from '@opentelemetry/api'` at the top of `src/otel.ts` — it passes every local gate because the peer is installed, but breaks typecheck/lint/jest for any consumer without the peer.",
+            "The `require` is not wrapped in try/catch, so a missing peer throws at module load and the package can no longer be imported at all.",
+            "The catch branch logs to console or rethrows, so the package emits noise or crashes for consumers who chose not to install the optional peers."
+          ],
+          "minScore": 9
+        },
+        {
+          "id": "redaction-invariant",
+          "label": "Span attributes come only from LlmLogEntry fields",
+          "ruleStatement": "The span's attributes are derived exclusively from the entry object's fields. The exporter never reads the request/response objects or headers, preserving the package's core no-raw-data redaction invariant.",
+          "passCriteria": [
+            "`grep -nE \"\\.(req|res|headers|request|response)\" src/otel.ts` returns no matches — the only data source is the `entry` parameter, whose fields are timestamp, model, inputTokens, outputTokens, callerTrace, url, maskedRequestBody?, maskedResponseBody?, and error?.",
+            "Every attribute key written to the span is one of the entry field names above; no attribute value comes from `JSON.stringify(entry)` or from any object other than the entry itself.",
+            "`maskedRequestBody` and `maskedResponseBody` are written to the span only behind an explicit presence check (e.g. `entry.maskedRequestBody !== undefined`) — never copied unconditionally.",
+            "On the error path the span records the error status and `entry.error.message` only; the entry is never mutated and no field outside the entry (e.g. a stack or payload) is added."
+          ],
+          "failureExamples": [
+            "A span attribute such as `http.request.body` populated from the raw request body or from `req.headers`.",
+            "The exporter closes over or receives the `ClientRequest`/response object and reads `headers`, `statusCode`, or `body` from it.",
+            "`maskedRequestBody`/`maskedResponseBody` are written to attributes even when undefined, so default (non-capturing) runs emit `undefined`-valued attributes."
+          ],
+          "minScore": 9
+        },
+        {
+          "id": "span-lifecycle-correctness",
+          "label": "Each call yields one complete, deterministic span",
+          "ruleStatement": "When the peer is present, every invocation creates exactly one span from a tracer named `llm-http-proxy`, starts it at `entry.timestamp`, ends it on every path including the error branch, and is deterministic — identical input produces identical spans with no shared module-level state.",
+          "passCriteria": [
+            "`grep -n \"getTracer\" src/otel.ts` shows the span is obtained via `trace.getTracer('llm-http-proxy')` and `grep -n \"llm-http-proxy.llm-call\" src/otel.ts` shows that exact span name literal.",
+            "The span start time is set from the entry (`span.setStartTime(entry.timestamp)` or the API equivalent) before attributes are assigned — not from module-load or call time.",
+            "`span.end()` is reachable on every code path that creates a span, including the `entry.error` branch — no invocation leaves an un-ended span.",
+            "Calling `otelSpanLogger(entry)` twice with the same entry and the peer present yields two spans with identical attributes — there is no module-level counter, no incrementing sequence, and the passed entry object is not mutated."
+          ],
+          "failureExamples": [
+            "The span is created via `new Span()` or with a hard-coded start time instead of `trace.getTracer('llm-http-proxy')`.",
+            "The error path returns before `span.end()`, leaking one open span per failed LLM call.",
+            "A module-level `let callCount` is baked into an attribute, so identical input produces different spans on successive calls."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "no-interceptor-change",
+          "label": "Change is strictly additive to the declared two files",
+          "ruleStatement": "This phase touches exactly two files — the new `src/otel.ts` and the re-export line in `src/index.ts`. The interceptor request path and every other source file are byte-identical to the phase-1 baseline, and no runtime dependency is added.",
+          "passCriteria": [
+            "`git diff <phase-1-baseline> -- packages/llm-http-proxy/src/interceptor.ts` (or `git diff HEAD` with HEAD at the phase-1 baseline) shows zero changed lines in `src/interceptor.ts`.",
+            "`git status --short packages/llm-http-proxy/src` lists exactly the untracked `src/otel.ts` and the modified `src/index.ts` — no other `src/*.ts` file appears in the change set.",
+            "`package.json` still has `\"dependencies\": {}` — no runtime dependency was added (the OTEL peers remain only in `peerDependencies`/`peerDependenciesMeta` from phase 1)."
+          ],
+          "failureExamples": [
+            "A diff that edits `src/interceptor.ts`, e.g. threading the exporter into the emit call site at the `this.logger(entry)` line.",
+            "`@opentelemetry/api` accidentally moved into `dependencies`, force-installing it on all consumers and breaking opt-in semantics.",
+            "Unrelated edits to `src/redaction.ts` or `src/options.ts` riding along in this phase's commit."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "gates-green",
+          "label": "Package and root gates pass with the new module in both builds",
+          "ruleStatement": "The package typecheck/lint/test/build gates and the root gates all stay green, and the existing dual CJS+ESM build compiles the new module with zero build-config changes — the ESM dist's bare `require` throws inside the try/catch and is the declared inert failure mode, not a crash.",
+          "passCriteria": [
+            "Running `npm run typecheck && npm run lint && npm test && npm run build` inside `packages/llm-http-proxy` exits 0 with no errors or lint findings.",
+            "After `npm run build`, both `dist/cjs/otel.js` and `dist/esm/otel.js` exist (with `.d.ts`/`.d.ts.map` siblings), and the build ran with no changes to `tsconfig.cjs.json`, `tsconfig.esm.json`, or the `build` script.",
+            "Reading `dist/esm/otel.js` shows the `require('@opentelemetry/api')` call inside the try/catch block — in the ESM build the bare `require` throws and is caught, leaving the module inert (the accepted safe failure mode).",
+            "The root workspace build and jest gates (`npm run build` and `npm test` from the repo root) also pass."
+          ],
+          "failureExamples": [
+            "`npm run build` fails, or silently drops `otel` from one of the two output formats (e.g. only `dist/cjs/otel.js` is emitted).",
+            "The ESM output contains a `require('@opentelemetry/api')` outside the try/catch, so importing the ESM build without the peer installed throws at import time.",
+            "`npm run lint` fails on the new file because the `no-var-requires` disable comment is missing or sits on the wrong line."
+          ],
+          "minScore": 8
+        }
+      ],
+      "healerHint": "The most likely failure is a top-level static `import ... from '@opentelemetry/api'` — it passes every local gate because the peer is installed, silently killing opt-in activation — so grep `src/otel.ts` for a bare top-level `@opentelemetry` import and move it into the try/catch `require` before running gates."
+    },
+    {
+      "id": "add-otel-exporter-proof-tests",
+      "order": 3,
+      "name": "Test span recording and peer-absent inertness",
+      "goal": "Prove both exporter behaviors in the default jest suite with no environment flag: an LlmLogEntry becomes a span when the OTEL peers are installed, and the exporter is inert when they are absent.",
+      "rationale": "The exporter is only trusted when both behaviors are verified: with the optional peers present an LlmLogEntry must become a real span, and with them absent the exporter must stay inert. Both proofs are fast (an in-memory span round-trip is milliseconds) and the OTEL packages are already devDependencies, so they belong in the always-green default `npm test` — the opt-in posture applies to runtime consumers, never to the package's own test gate.",
+      "filesAffected": [
+        "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/otel.test.ts"
+      ],
+      "changes": [
+        "Create src/otel.test.ts (it matches the existing jest testRegex, so no jest-config change) with a 'peers present' test: register a BasicTracerProvider with an InMemorySpanExporter and SimpleSpanProcessor (all from @opentelemetry/sdk-trace-base), call the exported otelSpanLogger with a sample LlmLogEntry, then assert getFinishedSpans() returns exactly one span whose attributes match the entry's fields and whose start time equals entry.timestamp (compare via the SDK's epoch-millisecond representation).",
+        "After that test, shut the provider down and reset the global tracer (provider.shutdown() plus trace.disable() from @opentelemetry/api) so no other suite is affected.",
+        "Add a 'peers absent' test: inside jest.isolateModules, call jest.doMock('@opentelemetry/api', () => { throw new Error('peer not installed'); }), re-require src/otel.ts so its load-time feature detection runs against the throwing mock, and assert calling the exported logger with an entry does not throw — proving the try/catch path is inert.",
+        "Run the default `npm test` (no RUN_OTEL or any env flag) and confirm both proofs pass; then run the full two-level gate — package `npm run typecheck && npm run lint && npm run build` (rebuild dist so the root link: consumer sees the new module) and root `nest build` + root jest — and confirm all stay green, with src/interceptor.ts and both jest configs untouched."
+      ],
+      "boundedContext": "logger seam",
+      "layer": "application",
+      "blastRadius": "small",
+      "inputs": [
+        "src/otel.ts — the exported Logger-compatible span exporter from phase 2",
+        "@opentelemetry/api and @opentelemetry/sdk-trace-base devDependencies (installed in phase 1) providing BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor",
+        "The peer-absent simulation technique: jest.doMock('@opentelemetry/api', () => { throw new Error('peer not installed'); }) inside jest.isolateModules",
+        "A sample LlmLogEntry fixture covering every field the exporter maps (timestamp, model, tokens, callerTrace, url, masked bodies, error)"
+      ],
+      "expectedResult": "src/otel.test.ts runs in the default `npm test` (no env flag) with two passing proofs — one span recorded via InMemorySpanExporter with matching attributes and start time when peers are present, and a non-throwing no-op when peers are simulated absent — and the full two-level gate (package typecheck/lint/test/build + root nest build/jest) is green.",
+      "dependsOn": [
+        "add-otel-span-exporter-module"
+      ],
+      "rubric": [
+        {
+          "id": "default-suite-activation",
+          "label": "Runs in the default suite with no flag",
+          "ruleStatement": "The new test file is picked up by the existing jest runner with zero config or env-flag ceremony — no environment variable, no jest-config edit, and no skip guard determines whether the proofs actually run.",
+          "passCriteria": [
+            "`src/otel.test.ts` matches the existing jest testRegex: a plain `npm test` with no env var shows both tests executing and passing",
+            "The file contains no `it.skip`/`describe.skip` and no env-gated `it` (no `RUN_OTEL` or similar condition controlling whether a test body runs)",
+            "`git diff` shows no jest config file was edited to discover the new file"
+          ],
+          "failureExamples": [
+            "Both tests only execute when RUN_OTEL is set, so the default `npm test` silently skips them",
+            "A jest-config edit was required to pick the file up",
+            "One test is marked `.skip`, so only one behavior is actually proven in the default run"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "peers-present-span-recording",
+          "label": "An entry becomes exactly one real span",
+          "ruleStatement": "With the OTEL peers installed, calling the exported Logger-seam function with one LlmLogEntry produces exactly one finished span recorded through the real SDK in-memory pipeline — not a hand-rolled fake.",
+          "passCriteria": [
+            "Imports `BasicTracerProvider`, `InMemorySpanExporter`, and `SimpleSpanProcessor` from `@opentelemetry/sdk-trace-base` and wires them together",
+            "Calls the exported `otelSpanLogger` (the Logger-compatible function from `src/otel.ts`) with a sample LlmLogEntry",
+            "Asserts `getFinishedSpans()` returns an array of length exactly 1"
+          ],
+          "failureExamples": [
+            "Asserts zero spans, or never calls `getFinishedSpans()`",
+            "Substitutes a hand-rolled fake span factory instead of the real SDK classes",
+            "Calls an internal function other than the exported Logger-compatible one"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "attribute-and-timestamp-fidelity",
+          "label": "Span content matches the entry",
+          "ruleStatement": "The recorded span's attributes and start time match the input entry field-for-field — the proof checks content, not just span count.",
+          "passCriteria": [
+            "Asserts the finished span's attributes cover every field the exporter maps: timestamp, model, tokens, callerTrace, url, masked bodies, and error",
+            "Asserts the span start time equals `entry.timestamp`, compared in the SDK's epoch-millisecond representation",
+            "The fixture carries non-trivial values (populated tokens, non-empty url, an error object) so the attribute assertions cannot pass vacuously"
+          ],
+          "failureExamples": [
+            "Only asserts span count, never attribute values",
+            "Compares start time against `Date.now()` instead of against `entry.timestamp`",
+            "The fixture omits error and masked-body fields, so their mapping is never exercised"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "peers-absent-inertness",
+          "label": "Inert when peers are absent",
+          "ruleStatement": "With `@opentelemetry/api` simulated absent at load time, the exported logger is a non-throwing no-op — the test must prove the try/catch feature-detection path, not accidentally exercise the installed-package path.",
+          "passCriteria": [
+            "The test body runs inside `jest.isolateModules`",
+            "`jest.doMock('@opentelemetry/api', () => { throw new Error('peer not installed'); })` is registered before `src/otel.ts` is re-required inside that isolate",
+            "After re-requiring, calling the exported logger with an entry completes without throwing, and the assertion is on that non-throw"
+          ],
+          "failureExamples": [
+            "`src/otel.ts` was required before the mock was registered, so the real installed module runs and the test passes even if the try/catch is broken",
+            "The throwing mock is never registered, so the inert path is never simulated",
+            "The test never calls the re-required logger, leaving the non-throw unasserted"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "global-teardown-and-isolation",
+          "label": "No global tracer leaks",
+          "ruleStatement": "The peers-present test tears down OTEL global state after its assertions so the rest of the default suite stays deterministic regardless of test order.",
+          "passCriteria": [
+            "`provider.shutdown()` is called after the span assertions",
+            "`trace.disable()` from `@opentelemetry/api` is called to reset the global tracer",
+            "One full default jest run in default order is green, with no cross-suite failure attributable to a still-registered provider"
+          ],
+          "failureExamples": [
+            "No `shutdown()`/`trace.disable()` call, leaving a registered global provider that other suites trip over",
+            "The suite only stays green under a particular test order, indicating leaked global state"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "gate-and-blast-radius",
+          "label": "Gates green, request path untouched",
+          "ruleStatement": "The phase lands inside its declared small blast radius: all package and root gates pass and nothing outside the test file changed — in particular the interceptor request path and the optional-peer posture are untouched.",
+          "passCriteria": [
+            "`npm run typecheck`, `npm run lint`, `npm run build`, and `npm test` pass in packages/llm-http-proxy",
+            "Root `nest build` and root jest pass, so the rebuilt dist keeps the root link: consumer compiling",
+            "`git diff` shows `src/interceptor.ts` unchanged",
+            "`package.json` still declares the `@opentelemetry/*` packages as optional peerDependencies — none promoted to `dependencies`"
+          ],
+          "failureExamples": [
+            "`src/interceptor.ts` was modified, altering the ClientRequest prototype write/end/on patch",
+            "An OTEL package was moved into hard `dependencies`, forcing installs on consumers who opted out",
+            "The package build or root build broke, leaving the link: consumer unable to compile"
+          ],
+          "minScore": 7
+        }
+      ],
+      "healerHint": "The peers-absent test most often passes vacuously because `src/otel.ts` gets required before the throwing mock is registered, so load-time feature detection never re-runs against the mock — fix by moving the `jest.doMock('@opentelemetry/api', …)` plus the `require` of `src/otel.ts` strictly inside `jest.isolateModules` and asserting the re-required logger call does not throw."
+    }
+  ],
+  "successCriteria": [
+    "`npm publish --dry-run` from packages/llm-http-proxy exits 0 with the packed tarball containing dist/, README.md (created this horizon), and LICENSE, and author set to a non-empty value; @opentelemetry/* appear only as peerDependencies marked optional via peerDependenciesMeta (never in dependencies); a Logger-compatible span exporter ships with one test proving an LlmLogEntry becomes a span when peers are installed and one test proving the exporter is inert and never imported/activated when peers are absent; no span attribute or emitted field leaks raw payload/header data (redaction invariant holds); the horizon keeps 3-5 phases (hard ceiling 7); package build/lint/typecheck/jest and root gates stay green after every phase; no interceptor request-path code changes; the recorded p99 latency miss (173.88% of baseline) is left deferred with no remediation code.",
+    "Add package README and author field: The package's two known publish-hygiene gaps are closed: packages/llm-http-proxy/README.md exists with the mandated content, package.json author is non-empty, and `npm run build && npm publish --dry-run` exits 0 with README.md, LICENSE, and dist/ in the tarball.",
+    "Add optional OTEL peer dependencies: packages/llm-http-proxy/package.json declares @opentelemetry/api and @opentelemetry/sdk-trace-base as optional peerDependencies (peerDependenciesMeta.optional:true) and as devDependencies, with `dependencies` still {}, the generated package-lock.json gitignored rather than committed, and typecheck/lint/test/build plus `npm publish --dry-run` all green.",
+    "Add OTEL span exporter module: src/otel.ts exists and exports a Logger-compatible span exporter, re-exported from src/index.ts, that lazy-loads @opentelemetry/api via try/catch require, emits a span from LlmLogEntry fields only, and is a non-throwing no-op when the peer is absent; the package typecheck/lint/test/build gates pass.",
+    "Test span recording and peer-absent inertness: src/otel.test.ts runs in the default `npm test` (no env flag) with two passing proofs — one span recorded via InMemorySpanExporter with matching attributes and start time when peers are present, and a non-throwing no-op when peers are simulated absent — and the full two-level gate (package typecheck/lint/test/build + root nest build/jest) is green."
+  ],
+  "deferred": [
+    "Latency-regression remediation of the recorded p99 miss (173.88% of baseline) — explicitly deferred by the user's scope choice; benchmark-results.md attributes it to measurement churn (interleaved install/restore), not interceptor code.",
+    "An actual `npm publish` (registry upload) — this horizon only proves publishability via dry-run; the real publish, and the open semver-freeze decision (LlmLogEntry/LlmLoggingOptions) that gates it, are later-horizon work.",
+    "Any change to the interceptor request path (the ClientRequest prototype write/end/on capture patch) — the task forbids it, and the latency miss is not being remediated here.",
+    "Any new feature code beyond the two bars — no new transformers, parsers, redaction rules, or SSE work beyond what exists.",
+    "The named streaming residuals (cross-event redaction continuity, caller-visible stream replay, non-SSE streaming formats) — declared out in the horizon-5 brief and not re-scoped by this horizon.",
+    "OTEL beyond the demo: no OTLP/HTTP/gRPC exporter, no trace propagation or context injection, no consumer-facing exporter docs — the demo proves the seam attaches; nothing more.",
+    "Add a prepack/prepublishOnly build script so `npm publish --dry-run` auto-builds — fails YAGNI gate 2 (not needed now): dist is rebuilt explicitly before the dry-run and no lifecycle script was requested.",
+    "Add repository/homepage/bugs/publishConfig fields to package.json — fails YAGNI gates 1 and 4 (not asked, ceremony): the dry-run exits 0 without them.",
+    "Document the OTEL exporter in the package README — fails YAGNI gate 1 (explicitly excluded by the publish-hygiene constraint): the README must not cover OpenTelemetry this horizon.",
+    "Make the exporter's lazy peer load active in the ESM dist output (e.g. createRequire(import.meta.url) or async import) — fails YAGNI gates 2 and 3 (not needed now, speculative): the demo and its proofs run on the CJS/jest path, and the ESM build's bare `require` is safely inert via the same try/catch.",
+    "Add an OTLP/HTTP/gRPC exporter or collector sink — fails YAGNI gates 1 and 3 (not asked, speculative): InMemorySpanExporter already proves the span was recorded.",
+    "Add trace propagation or context injection so spans join a parent trace — fails YAGNI gates 1 and 3: the horizon proves the seam attaches, nothing more.",
+    "Perform the real `npm publish` — fails YAGNI gate 2 (not needed now): this horizon proves publishability via dry-run; the real publish is gated on the open semver-freeze decision in a later horizon."
+  ]
+}

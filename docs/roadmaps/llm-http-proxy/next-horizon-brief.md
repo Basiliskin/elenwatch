@@ -1,40 +1,42 @@
-# Next-horizon brief (for horizon 6) — prepared Stage 3.5, horizon 5
-
+# Next-horizon brief (for horizon 7) — prepared Stage 3.5, horizon 6
 
 ## Unknowns
-- Did the committed benchmark-results.md record a budget miss (p50 >=1ms or p99 >=2%) on the request path, the buffered response-data path, or the streaming per-event path — and for any miss, is it attributable to the interceptor/parser code or to environmental noise?
-- Did the OTEL-posture decision record name an activation mechanism (optionalDependencies vs peerDependencies vs runtime feature-detect) specific enough that the demo can be written against it without reopening the decision?
-- Does the current Logger seam expose enough surface for a span exporter to attach to, or does writing the OTEL demo first require a new seam signature/option beyond what exists?
-- Does `npm publish --dry-run` today actually pass cleanly given package.json files[] references a nonexistent package README.md and the author field is empty, or must hygiene fixes land before the publish bar can be claimed?
-- Did the package-identity decision resolve the streaming-same-version-additive vs 0.3.0-bump sub-question, and what does that resolution opt into for the still-open blockers.md LlmLogEntry/LlmLoggingOptions semver-freeze question?
-- Which of the named streaming residuals (cross-event redaction continuity, caller-visible stream replay, non-SSE streaming formats) are still authentically un-scoped after the transformer-slice re-pin and SSE rewire, rather than implicitly settled?
+- When the built ESM dist (dist/esm/otel.js) runs in a real ESM consumer without @opentelemetry peers installed, does the try/catch-wrapped lazy require actually stay inert, or does tsc's ESM emit of require() throw (ERR_REQUIRE_ESM/ReferenceError) such that only createRequire(import.meta.url) or an async import would make the ESM build safe? (All horizon-6 proofs run under jest/CJS; the ESM runtime path is untested.)
+- Does the vision's full-objective bar — 'an OTEL span exporter that activates only when optional @opentelemetry/* peers are installed' — count as met by the InMemorySpanExporter demo, or does claiming the bar require a wire-level OTLP/HTTP export path to a real collector?
+- Given dist/ is gitignored and no prepack/prepublishOnly script exists, is a real `npm publish` intended to run from a pre-built local tree, or must it work from a fresh clone (requiring a prepack/prepare auto-build so it never packs stale or missing dist)?
+- Does the recorded request-path p99 FAIL (173.88% of baseline, attributed to interleaved install/restore churn) close the latency full-objective bar as a recorded environmental miss, or is a clean re-run owed before the project's full objective is claimable?
+- Do the @opentelemetry/* peerDependency version ranges chosen this horizon actually satisfy a real consumer's `npm install` (peer resolution against the current registry), or was only local devDependency resolution exercised?
+- Which of the still-open blockers (semver-freeze of LlmLogEntry/LlmLoggingOptions, process-global monkey-patch acceptability, root workspaces/CI isolation, payload-capture opt-in guarantee, streaming-seam first-class-ness) actually gate a real publish, versus being post-publish product decisions?
 
-## Research (before planning horizon 6)
-- Read docs/roadmaps/llm-http-proxy/benchmark-results.md for the recorded p50/p99 numbers and the PASS/FAIL verdict per measurement point before deciding whether any latency remediation is owed.
-- Re-read decisions.md for the two new records (package identity, OTEL posture) and confirm blockers.md line 2 is actually closed and which deferred bar each record names.
-- Read packages/llm-http-proxy/src/logger.ts and its doc comments in src/index.ts:5 and src/logger.test.ts:4 to learn the exact Logger-seam shape an OTEL span exporter must implement.
-- Check packages/llm-http-proxy/package.json files[] against the package directory for the missing README.md and empty author field, and run npm publish --dry-run to see what actually blocks a clean publish.
-- Run the opt-in `RUN_BENCH=1 npx jest src/benchmark.test.ts` from the package directory to verify the harness still reproduces the committed numbers on current hardware.
-- Re-read docs/roadmaps/llm-http-proxy/transformer-slice-spec.md §6 exclusions and the re-pinned per-event clauses to confirm which streaming residuals remain genuinely open.
-- Run the two-level gate (package build/lint/typecheck/jest with dist rebuilt, then root build/jest) before planning any phase that will consume or verify the package.
+## Research (before planning horizon 7)
+- Rebuild the package after this horizon and inspect dist/esm/otel.js plus run a genuine ESM smoke test (`node --input-type=module` importing dist/esm/index.js with peers absent then present) to establish whether the ESM lazy-load is truly inert — this decides the deferred ESM item, not a guess from the CJS tests.
+- Read packages/llm-http-proxy/src/otel.ts and src/otel.test.ts (created this horizon) for the attribute mapping, the lazy-load mechanism, and whether writing the exporter required a Logger-seam signature change — this resolves blockers.md's open seam-surface question.
+- Re-read docs/roadmaps/llm-http-proxy/blockers.md after this horizon to enumerate which open lines (semver-freeze, monkey-patch seam, workspaces/CI, payload-capture guarantee, streaming) still name 'before publish' conditions.
+- Re-read packages/llm-http-proxy/README.md (created this horizon) to confirm the mandated content and absence of OTEL docs, and judge whether it is publish-ready as-is.
+- Re-check the npm registry (`npm view llm-http-proxy`) at decision time for name availability before planning a real publish — the horizon-5 record says availability is not static.
+- Check git status/diff for packages/llm-http-proxy to see whether the newly created package-lock.json was committed or gitignored per the zero-lockfile convention, since any prepack-based real publish depends on that state.
+- Re-run `npm publish --dry-run` from the package and compare the tarball contents/warnings against this horizon's baseline to see what (if anything) still blocks a clean real publish.
+- Re-read docs/roadmaps/llm-http-proxy/benchmark-results.md and re-run `RUN_BENCH=1 npx jest src/benchmark.test.ts --runInBand` to confirm the p99 FAIL still reproduces before deciding the latency bar's closure.
 
-## Decisions needed (horizon 6 cannot avoid these)
-- Which deferred full-objective bar to execute first now that both are unblocked — publish verification (dry-run, no deps) vs the OTEL span-exporter demo (dep install + exporter code through the Logger seam) — and whether the two fit in one horizon.
-- If the benchmark records a miss: whether latency-regression remediation (interceptor/parser fixes) is next-horizon work or stays unowned follow-up despite the recorded FAIL.
-- The OTEL dependency mechanism and version range: optionalDependencies vs peerDependencies for @opentelemetry/*, given the posture record names activation via the Logger seam but no install mechanism is scaffolded yet.
-- Whether the missing package README.md and empty author field are must-fix prerequisites for publish verification or acceptable to ship and correct post-publish.
-- Whether the streaming residuals (cross-event redaction continuity, caller-visible stream replay, non-SSE formats) get re-scoped into a named future horizon or are permanently declared out.
-- Whether the blockers.md semver-freeze question (LlmLogEntry/LlmLoggingOptions frozen vs free to evolve) must be resolved before publish, since publishing locks the public API surface.
+## Decisions needed (horizon 7 cannot avoid these)
+- Whether to execute the last deferred full-objective bar — a real `npm publish` — next, and in what order to resolve the blockers it surfaces (semver-freeze first?) vs continuing to defer publish.
+- Whether the public LlmLogEntry/LlmLoggingOptions surface freezes as-is for publish (publishing locks the API), or whether any changes motivated by the OTEL exporter work must land before the freeze.
+- Whether to make the lazy peer load actually active in the ESM dist output (createRequire(import.meta.url) / async import) or to accept CJS-only activeness with an inert ESM build as the shipped behavior.
+- Whether the full-objective OTEL bar is declared met by the InMemorySpanExporter demo, or whether an OTLP/HTTP/gRPC wire exporter is required to close it.
+- Whether spans must join a parent trace (trace propagation / context injection) for the OTEL bar to count, or whether a root-span-per-entry demo is sufficient.
+- How much publish-hygiene ceremony is owed before a real publish: prepack/prepublishOnly auto-build, repository/homepage/bugs/publishConfig fields, and consumer-facing OTEL docs in the README — each individually in or out.
 
 ## Artifacts to inspect
-- docs/roadmaps/llm-http-proxy/benchmark-results.md (recorded p50/p99 numbers + PASS/FAIL verdicts, if the run phase landed)
-- docs/roadmaps/llm-http-proxy/decisions.md (the two new records: package identity, OTEL posture)
-- docs/roadmaps/llm-http-proxy/blockers.md (line 2 closed; line 4 semver-freeze still open)
-- docs/roadmaps/llm-http-proxy/transformer-slice-spec.md (§6 exclusions, re-pinned per-event clauses)
-- packages/llm-http-proxy/src/benchmark.test.ts (the RUN_BENCH-gated harness — shape to reproduce numbers on)
-- packages/llm-http-proxy/src/logger.ts and src/index.ts (Logger seam — the OTEL exporter activation point)
-- packages/llm-http-proxy/src/interceptor.ts (code under latency scrutiny if a miss was recorded)
-- packages/llm-http-proxy/package.json (files[]/author publish-hygiene gaps)
+- /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/otel.ts
+- /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/otel.test.ts
+- /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/README.md
+- /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package.json
+- /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/dist/esm/otel.js
+- /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/logger.ts
+- /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/options.ts
+- /Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/index.ts
+- /Users/dimitrykatz/workspace/elenwatch/docs/roadmaps/llm-http-proxy/blockers.md
+- /Users/dimitrykatz/workspace/elenwatch/docs/roadmaps/llm-http-proxy/benchmark-results.md
 
 ## Recommended next-horizon scope
-The next horizon should execute one, at most two, of the now-unblocked deferred full-objective bars while keeping the small 3-5 phase envelope — do not attempt both plus residuals. Publish verification is the lighter bar: the name is confirmed free on npm, so it is essentially an `npm publish --dry-run` plus the two known hygiene fixes (the missing package README.md that files[] already references, and the empty author field), with no new feature code and no dependency installs. The OTEL span-exporter demo is the heavier bar — installing optional @opentelemetry/* per the recorded posture, wiring an exporter through the existing Logger seam, and proving opt-in-only activation — and it is the first true consumer of that seam, so it may surface seam gaps that deserve their own horizon rather than sharing one with publish work. Latency-regression remediation is only real work if benchmark-results.md records a miss (p50 >=1ms or p99 >=2%), in which case it should displace one of the bars; the streaming residuals stay declared-out unless the user re-scopes them. Roughly two to four phases.
+The next horizon should target the one remaining unexecuted full-objective bar — a real `npm publish` — since the publish-hygiene debt (missing README + empty author) is fixed this horizon and only the semver-freeze decision and the unproven ESM story still stand between the package and publish; it should spend its early phases verifying the built ESM dist's lazy-load inertness (adding createRequire(import.meta.url)/async import only if the smoke test proves the current output unsafe) and resolving the semver-freeze, then close the OTEL bar's completion criterion (InMemory proof vs wire exporter) rather than building new exporter features. It should hold off on OTLP/HTTP wire export, trace propagation/context injection, prepack and repository/metadata ceremony, and consumer-facing OTEL README docs until the decisionsNeeded above are resolved — roughly 3-5 phases, one publish bar plus verification, no new feature code.
