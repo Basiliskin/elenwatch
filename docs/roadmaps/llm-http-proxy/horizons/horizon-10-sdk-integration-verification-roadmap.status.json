@@ -1,0 +1,104 @@
+{
+  "roadmapFile": "docs/roadmaps/llm-http-proxy/horizons/horizon-10-sdk-integration-verification-roadmap.json",
+  "revision": 1,
+  "phases": [
+    {
+      "phaseId": "install-sdk-devdeps",
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-30T17:25:00Z",
+      "completedAt": "2026-08-30T17:35:00Z",
+      "override": {
+        "authorizedBy": "user (explicit 'continue executing horizon 10 phase 0' continuation request, 2026-08-30)",
+        "at": "2026-08-30T17:35:00Z",
+        "dimensionIds": ["pnpm-lockfile-discipline"],
+        "reason": "Rubric dimension was written against the wrong lockfile. The repo-root pnpm-lock.yaml governs a different package (the repo's NestJS app — @nestjs/common etc., committed since v0); packages/llm-http-proxy/pnpm-lock.yaml is the actual lockfile-of-record for llm-http-proxy (also committed since v0). pnpm 10 with `pnpm add -D` from inside a non-workspace subpackage correctly updates the per-package lockfile. The SDK entries landed at packages/llm-http-proxy/pnpm-lock.yaml (27 @ai-sdk hits, tracked by git), types resolve, all gates green, zero-hard-deps invariant preserved, no tracked package-lock.json, .gitignore unchanged. Phase's functional deliverable is correct; the rubric target is the wrong file. First override on this dimensionId in the project (decision.md not amended; per the v5.6 rule, amendment triggers on a SECOND override of the same dimensionId).",
+        "gradeResultBefore": {
+          "overallPass": false,
+          "rubric": [
+            {
+              "dimensionId": "sdk-devdeps-placement",
+              "score": 10,
+              "evidence": "devDependencies contains exactly: '@ai-sdk/anthropic': '^4.0.46', '@ai-sdk/google': '^4.0.58', '@ai-sdk/openai': '^4.0.52', 'ai': '^7.0.85'. dependencies key absent. peerDependencies has only OTEL api/sdk-trace-base and undici.",
+              "verdict": "pass"
+            },
+            {
+              "dimensionId": "zero-hard-deps-invariant",
+              "score": 8,
+              "evidence": "dependencies={} semantically preserved (key removed but no SDKs anywhere). peerDependencies unchanged. No SDKs in any other dependency key.",
+              "verdict": "pass"
+            },
+            {
+              "dimensionId": "pnpm-lockfile-discipline",
+              "score": 4,
+              "evidence": "FAIL of passCriteria (a): grep -E '/(ai|@ai-sdk/(anthropic|openai|google))@' pnpm-lock.yaml from REPO ROOT = 0 matches. The repo-root lockfile governs a NestJS app (its importers list @nestjs/common etc.) — not llm-http-proxy. The actual SDK entries are in packages/llm-http-proxy/pnpm-lock.yaml (27 @ai-sdk hits, tracked by git, committed since v0). PASS of (b): git ls-files packages/llm-http-proxy/package-lock.json is empty. PASS of (c): .gitignore line 5 reads 'package-lock.json'. Discovery misidentified the lockfile-of-record.",
+              "verdict": "fail"
+            },
+            {
+              "dimensionId": "type-resolves-cleanly",
+              "score": 10,
+              "evidence": "tsc --noEmit exits 0 from packages/llm-http-proxy. node_modules/@ai-sdk/ has anthropic, google, openai. require.resolve('ai', {paths: ['./packages/llm-http-proxy']}) returns a path under node_modules/ai.",
+              "verdict": "pass"
+            }
+          ],
+          "notes": "Phase achieves its functional goal — SDKs installed in devDependencies, zero-hard-deps invariant holds, types resolve, all gates green. Only the rubric's lockfile-discipline passCriteria was written against the wrong file."
+        }
+      },
+      "gradeResult": {
+        "overallPass": false,
+        "rubric": [
+          {
+            "dimensionId": "sdk-devdeps-placement",
+            "score": 10,
+            "evidence": "devDependencies contains exactly: '@ai-sdk/anthropic': '^4.0.46', '@ai-sdk/google': '^4.0.58', '@ai-sdk/openai': '^4.0.52', 'ai': '^7.0.85'. dependencies key absent. peerDependencies has only OTEL api/sdk-trace-base and undici.",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "zero-hard-deps-invariant",
+            "score": 8,
+            "evidence": "dependencies={} semantically preserved (key removed but no SDKs anywhere). peerDependencies unchanged. No SDKs in any other dependency key.",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "pnpm-lockfile-discipline",
+            "score": 4,
+            "evidence": "FAIL of passCriteria (a): grep -E '/(ai|@ai-sdk/(anthropic|openai|google))@' pnpm-lock.yaml from REPO ROOT = 0 matches. The repo-root lockfile governs a NestJS app (its importers list @nestjs/common etc.) — not llm-http-proxy. The actual SDK entries are in packages/llm-http-proxy/pnpm-lock.yaml (27 @ai-sdk hits, tracked by git, committed since v0). PASS of (b): git ls-files packages/llm-http-proxy/package-lock.json is empty. PASS of (c): .gitignore line 5 reads 'package-lock.json'. Discovery misidentified the lockfile-of-record.",
+            "verdict": "fail"
+          },
+          {
+            "dimensionId": "type-resolves-cleanly",
+            "score": 10,
+            "evidence": "tsc --noEmit exits 0 from packages/llm-http-proxy. node_modules/@ai-sdk/ has anthropic, google, openai. require.resolve('ai', {paths: ['./packages/llm-http-proxy']}) returns a path under node_modules/ai.",
+            "verdict": "pass"
+          }
+        ],
+        "notes": "OVERRIDE APPLIED — phase done with override. The pnpm-lockfile-discipline dimension is failing its literal passCriteria (the rubric greps the repo-root pnpm-lock.yaml which governs a different package). The functional deliverable is correct (SDKs in devDependencies, zero-hard-deps holds, types resolve, all gates green). Override authorized by the user's explicit continuation request after seeing the block report. This is the first override on this dimensionId in the project — a future override of the same dimension would trigger a decisions.md amendment per the v5.6 rule."
+      }
+    },
+    {
+      "phaseId": "add-sdk-fetch-shim-and-record-decision",
+      "status": "not-started",
+      "attempts": 0,
+      "notes": []
+    },
+    {
+      "phaseId": "add-anthropic-sdk-integration-test",
+      "status": "not-started",
+      "attempts": 0,
+      "notes": []
+    },
+    {
+      "phaseId": "add-openai-sdk-integration-test",
+      "status": "not-started",
+      "attempts": 0,
+      "notes": []
+    },
+    {
+      "phaseId": "add-gemini-sdk-integration-test-and-baseline",
+      "status": "not-started",
+      "attempts": 0,
+      "notes": []
+    }
+  ],
+  "updatedAt": "2026-08-30T17:35:00Z"
+}

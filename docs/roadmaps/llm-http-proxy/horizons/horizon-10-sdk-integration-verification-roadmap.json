@@ -1,0 +1,868 @@
+{
+  "task": "Plan horizon 10 of llm-http-proxy \u2014 land horizon-8's deferred SDK deliverables (SDK devDeps + createSdkFetchShim + 3 SDK integration tests) and end-to-end verify the horizon-9 undici dual-patch against real SDK-issued fetch traffic per provider without each test passing a per-file fetch shim option.",
+  "analysis": {
+    "objective": "Land horizon-8's deferred SDK deliverables (SDK devDeps + fetch-shim + 3 SDK integration tests) and end-to-end verify that the horizon-9 undici dual-patch captures real SDK-issued fetch traffic per provider without each test passing a per-file fetch shim option.",
+    "successDefinition": "Done and correct iff: (a) packages/llm-http-proxy/package.json lists ai + @ai-sdk/anthropic + @ai-sdk/openai + @ai-sdk/google in devDependencies with dependencies and peerDependencies unchanged (zero-hard-deps invariant preserved) and any generated package-lock.json is gitignored; (b) docs/roadmaps/llm-http-proxy/decisions.md has a new dated entry recording option B (per-call fetch shim built on node:https.request) as the chosen SDK transport strategy; (c) packages/llm-http-proxy/src/sdk-fetch-shim.ts exists exporting createSdkFetchShim() (a factory returning a fetch function typed against the SDK providers' fetch option, translating the SDK Request shape to node:https.request and the response body back to a Web Response, not re-exported from src/index.ts); (d) three new *.sdk.integration.test.ts files exist (one per provider: anthropic, openai, gemini), each gated on its per-provider API key env var using the horizon-7 raw-HTTPS gate shape verbatim (hasKey via length>0 check, if/else describe/describe.skip, two-setImmediate flush, JSON.stringify no-key safety, try/finally install/restore), none passing a per-file fetch: createNodeHttpsFetch() shim option to the SDK provider; (e) with each provider's API key env var set, the corresponding SDK suite runs one real generateText through the SDK (without per-file fetch override) and asserts entries.length === 1 with the expected LlmLogEntry shape; (f) default npm test (no env vars) skips every SDK suite with zero network egress; (g) npm run typecheck, npm run lint, npm run build stay green; (h) post-horizon-10 baseline recorded: npx jest --listTests | wc -l count, default npm test wall-clock, all gates green.",
+    "assumptions": [
+      "The horizon-9 dual-patch path (WrappingDispatcher around setGlobalDispatcher + http.ClientRequest.prototype patch) is the load-bearing capture surface for SDK-issued fetch traffic in Node 22 once SDK providers are routed through globalThis.fetch via the SDK's own internal default, so removing the per-file fetch shim option does not silently bypass capture.",
+      "The horizon-7 raw-HTTPS integration test files (anthropic.integration.test.ts, openai.integration.test.ts, gemini.integration.test.ts) are the authoritative templates for the gate + flush + assertion shape and are copied verbatim into the new SDK suites with only provider-key/url/model substitutions.",
+      "The Vercel AI SDK v5 provider factories (anthropic, openai, google) accept a fetch option that, when omitted, defaults to globalThis.fetch (undici-backed in Node 22), so end-to-end dual-patch verification runs against the same dispatcher surface already proven by horizon-9's global-fetch-capture.integration.test.ts.",
+      "Empty-string env vars (e.g. ANTHROPIC_API_KEY='') are treated as unset and resolve to describe.skip, matching the horizon-7 raw-HTTPS gate.",
+      "Gemini's @ai-sdk/google provider uses header auth (x-goog-api-key) by default rather than URL-query ?key=, so the URL-key-safety rubric from horizon-7's gemini test carries over unchanged into the SDK gemini suite.",
+      "The package's zero-lockfile convention (package-lock.json gitignored at package level) is preserved when the SDK devDependencies install runs; the install is done with the same package manager whose lockfile is committed at the repo root.",
+      "The horizon-9 deriveUrl hostHeader-priority fix (Phase 1, discovery 'undici-fetch-body-is-async-generator') preserves port-bearing URL capture for both globalThis.fetch and SDK-routed fetch traffic, so no deriveUrl change is needed for the SDK verification.",
+      "The dual-patch's setGlobalDispatcher wrapping is global process state; the existing restore() round-trip via Object.is(originalDispatcher) is sufficient to keep test isolation intact across the new SDK suites plus the existing horizon-7 raw-HTTPS tests plus horizon-9's global-fetch-capture test.",
+      "The SDK deliverable shim name from horizon-8 was createNodeHttpsFetch(); horizon-10 uses createSdkFetchShim() to match the user's horizon-10 wording while preserving the same transport (node:https.request) and SDK-option-typing contract.",
+      "Default npm test wall-clock stays within ms-scale skip-overhead of horizon-9's recorded 127 passed / 5 skipped (or 128 passed / 5 skipped with undici present) baseline after the three new *.sdk.integration.test.ts describe.skip suites are added.",
+      "Jest 29.7.0 + Node 22.14.0 + testEnvironment: 'node' lazy-loads globalThis.fetch through Node's bootstrap path which does NOT share globalDispatcher state with the user-installed require('undici'); the SDK tests rely on the SDK's internal default fetch routing through the same global dispatcher surface that horizon-9's setGlobalDispatcher patched at install time, not on globalThis.fetch being literally identical to require('undici').fetch.",
+      "Phase 1's createSdkFetchShim has zero current consumers in the SDK tests: the SDK tests rely on the dual-patch alone and do not pass the shim to the providers, so the shim can be authored at any time relative to Phases 2-4 without affecting their correctness."
+    ],
+    "risks": [
+      "Dual-patch double emission: both the http.ClientRequest.prototype patch AND the undici setGlobalDispatcher patch can fire for the same logical request when an SDK call routes through node:https.request indirectly (mitigation: the SDK tests assert entries.length === 1, not >= 1, so a double emission fails the assertion and surfaces the regression instead of silently emitting two entries).",
+      "SDK test gate-shape parity risk: the new *.sdk.integration.test.ts files must copy the horizon-7 raw-HTTPS gate shape verbatim (hasKey via length>0 check, if/else describe/describe.skip, two-setImmediate flush, JSON.stringify no-key safety, try/finally install/restore); any drift from this template (e.g. forgetting the second setImmediate tick, using truthy check that treats '' as set) reintroduces the horizon-7 gotchas into the SDK surface.",
+      "Jest 29 + Node 22 + testEnvironment: 'node' does not intercept globalThis.fetch: per discoveries.md horizon-9 entry 'jest-29-node-22-fetch-bridge-broken', Node's bootstrap lazy-loader spawns a fresh bundled undici for globalThis.fetch under Jest, so the dual-patch surface may not engage on the globalThis.fetch path; the SDK tests must therefore either (a) drive traffic through the SDK's own internal fetch which routes through the same globalDispatcher the patch wrapped, or (b) explicitly import undici and call ud.fetch when SDK-routed traffic does not engage \u2014 the rubric must lock one of these in advance to avoid a silently-skipped surface.",
+      "Dual-patch install/restore cross-test contamination: three new SDK suites plus the existing horizon-7 raw-HTTPS suites plus horizon-9's global-fetch-capture suite all share global http.ClientRequest.prototype and global undici dispatcher state; if any SDK suite forgets interceptor.restore() in a finally (or throws between install and restore), subsequent tests across the same jest run see a stale wrapper; mitigation: enforce try/finally install/restore discipline per the gate-shape parity risk above.",
+      "SdkFetchShim is NOT re-exported from src/index.ts: the shim is test-only surface; if a future refactor accidentally re-exports it, the SDK packages become a load-bearing public surface and the zero-hard-deps invariant (dependencies: {}) is silently broken \u2014 the file-header comment and the no-new-exported-symbols rubric dimension lock this.",
+      "SDK version drift: @ai-sdk/* v5.x exposes the fetch option in the documented shape today; a future v6 major could rename or remove the fetch option, breaking both the shim's type compatibility and the SDK test wiring; mitigation: tsc --noEmit will fail the moment the SDK option's type narrows, so the rubric's typed-and-gates-green dimension surfaces the drift before runtime.",
+      "SDK default model name drift: a future SDK release may rename the default claude-3-5-haiku-20241022 / gpt-4o-mini / gemini-2.0-flash model identifiers, causing the model-substring assertions (model contains 'claude' / 'gpt' / 'gemini') to fail even though capture works; mitigation: each test reads the model from a per-provider MODEL env var with a sensible default, matching horizon-7's env-driven-baseurl-model-extension pattern.",
+      "Rate limit / network firewall: live SDK calls against real provider endpoints can fail with 429 / network errors that are not capture bugs but would still fail the suite; mitigation: the gate is opt-in (key env var present), so default npm test is unaffected, and the horizon-7 baselines prove the network path is reachable from this environment at planning time.",
+      "The horizon-5 p99 latency-budget FAIL (173.88% of baseline, recorded as environmental noise) is not addressed by this horizon; adding 3 SDK suites may shift the wall-clock and is not a latency-budget re-run.",
+      "The user has redirected horizon 8 and horizon 9 away from the publish-focused Stage 3.5 brief; horizon 10 inherits that redirect, so the dual-patch verification is the bound work and publish-side work stays deferred \u2014 but if the dual-patch verification proves fragile (e.g. SDK provider never engages the patch), the redirect chain may need a new horizon to revisit the shim-vs-undici decision."
+    ],
+    "outOfScope": [
+      {
+        "name": "real npm publish",
+        "reason": "publish bar is consistently deferred across horizons 7, 8, and 9 and the user redirected horizon 10 away from it; npm publish --dry-run was proven green in horizon 6."
+      },
+      {
+        "name": "semver-freeze call / VERSION bump from 0.2.0 to 0.3.0",
+        "reason": "publish-side work; horizon-10 changes are test-only surface (sdk-fetch-shim is NOT re-exported from src/index.ts) so the public API stays 0.2.0 with no version bump."
+      },
+      {
+        "name": "ESM dist lazy-require inertness proof under a real ESM consumer",
+        "reason": "publish-side work; horizon-6's InMemorySpanExporter demo + horizon-9's lazy-require for undici is the closed form for the inertness proof."
+      },
+      {
+        "name": "prepack / prepare / prepublishOnly auto-build scripts",
+        "reason": "publish-side work; package.json currently has no such scripts and dist/ stays gitignored."
+      },
+      {
+        "name": "repository / homepage / bugs / publishConfig fields in package.json",
+        "reason": "publish-side metadata; not required for SDK test execution or dual-patch verification."
+      },
+      {
+        "name": "consumer-facing OTEL README docs",
+        "reason": "publish-side work; horizon-6 closed the InMemorySpanExporter round-trip and horizon-10 does not change the OTEL surface."
+      },
+      {
+        "name": "additional provider SDK tests beyond anthropic / openai / gemini (Mistral, Cohere, DeepSeek, Bedrock, etc.)",
+        "reason": "YAGNI gate 1 (not asked for); the three named providers are the documented provider-parser surface and the horizon-7 baseline."
+      },
+      {
+        "name": "streaming-mode / auth-error-path / rate-limit-backoff deepening for SDK calls",
+        "reason": "YAGNI / out-of-scope for a dual-patch verification horizon; each suite runs exactly one generateText per provider."
+      },
+      {
+        "name": "jest testPathIgnorePatterns migration for SDK tests",
+        "reason": "rejected per horizon-7 fetch-baseline-contract-shift discovery; testRegex already picks up *.sdk.integration.test.ts without config changes."
+      },
+      {
+        "name": "clean re-run of the horizon-5 p99 latency bar",
+        "reason": "SDK integration tests are not the latency bar; horizon-5 p99 FAIL stays closed as a recorded environmental miss per blocker 2026-08-30 horizon 7."
+      },
+      {
+        "name": "removing or further restricting the horizon-9 undici peer (e.g. narrowing ^6.0.0 || ^7.0.0 to ^6.x only, or dropping the peer entirely)",
+        "reason": "horizon-9's dual-patch is the load-bearing capture surface for SDK-issued fetch traffic in this horizon; tightening or removing the peer mid-verification would invalidate the verification itself."
+      }
+    ],
+    "domainShape": "technical",
+    "domainShapeReason": "horizon-10 objective is interception/SDK-integration machinery \u2014 patching http.ClientRequest.prototype, wrapping undici's global dispatcher, translating SDK Request shapes, gate-shaped opt-in integration tests \u2014 with no business entities, rules, or workflows a domain expert would recognize; this classification was locked at horizon 1 in decisions.md (2026-08-28 | horizon 1 | domain-shape-fit for llm-http-proxy is 'technical') and the horizon-10 objective does not introduce any business-noun surface that would re-open it.",
+    "ubiquitousLanguage": [
+      {
+        "term": "dual-patch",
+        "meaning": "the horizon-9 interception surface that wraps BOTH http.ClientRequest.prototype (legacy node:http + node:https path) AND undici's global dispatcher via setGlobalDispatcher (globalThis.fetch + SDK-routed fetch path), sharing one emitLogEntry builder; restore() round-trips both surfaces via captured references."
+      },
+      {
+        "term": "fetch shim",
+        "meaning": "a factory function (createSdkFetchShim in this horizon) returning a fetch implementation backed by node:https.request that translates a Web Request into a node:https.request call and the IncomingMessage response back into a Web Response; in horizon-8's design it was the per-file capture seam, in horizon-10 it becomes available as test-only surface but is NOT required by the SDK verification because the dual-patch is sufficient."
+      },
+      {
+        "term": "SDK provider",
+        "meaning": "a per-vendor Vercel AI SDK factory (anthropic from @ai-sdk/anthropic, openai from @ai-sdk/openai, google from @ai-sdk/google) that exposes a fetch option and accepts a model identifier; in horizon-10 it is the unit of capture verification (one *.sdk.integration.test.ts per provider) and its default transport is the surface the dual-patch must capture."
+      },
+      {
+        "term": "undici peer",
+        "meaning": "the horizon-9 optional peerDependency ^6.0.0 || ^7.0.0 with peerDependenciesMeta.undici.optional = true; allows the dual-patch's install() to lazy-require undici and gracefully degrade when absent, while remaining zero-hard-deps (dependencies: {} unchanged)."
+      },
+      {
+        "term": "interceptor",
+        "meaning": "the packages/llm-http-proxy/src/interceptor.ts Interceptor class with install()/restore() methods; in horizon-10 each new SDK suite drives the same install/restore try/finally discipline that horizon-7's raw-HTTPS tests use, and the dual-patch is engaged through the same install() entry point."
+      },
+      {
+        "term": "dispatcher",
+        "meaning": "the undici Dispatcher interface (DispatchOptions / DispatchHandlers) that the horizon-9 WrappingDispatcher structurally types against; install() captures getGlobalDispatcher() into this.dispatcherOriginal and replaces it with a WrappingDispatcher that routes onError/onHeaders/onData/onComplete through the synthetic ClientRequest view."
+      },
+      {
+        "term": "LlmLogEntry",
+        "meaning": "the public shape from src/options.ts ({timestamp, model, inputTokens, outputTokens, callerTrace, url, optional maskedRequestBody/maskedResponseBody}) that every SDK suite's entries.length === 1 assertion ultimately reads; the dual-patch's emitLogEntry builder is the single producer."
+      },
+      {
+        "term": "integration test",
+        "meaning": "a *.integration.test.ts file (or *.sdk.integration.test.ts) discovered by Jest's testRegex, gated on an env var (per-provider API key for SDK suites, undici presence for the global-fetch suite), running real network traffic against a real provider endpoint or a localhost mock server; in horizon-10 the three new SDK suites join the existing horizon-7 raw-HTTPS + horizon-9 global-fetch integration-test set."
+      }
+    ]
+  },
+  "discoveryFindings": [
+    {
+      "area": "package devDependencies + lockfile baseline",
+      "finding": "package.json devDependencies lists only dev infra (@eslint/js, @opentelemetry/api, @types/jest, @types/node@^22.10.7, jest@^29.7.0, ts-jest, typescript@^5.7.3, etc.); dependencies is {}. Vercel AI SDK is NOT installed anywhere \u2014 no entry for ai or @ai-sdk/* in package.json, no @ai-sdk/ or ai directory under packages/llm-http-proxy/node_modules, no entry in pnpm-lock.yaml. The package currently commits BOTH a pnpm-lock.yaml AND a package-lock.json on disk; the .gitignore only ignores package-lock.json (line 5).",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package.json",
+      "implication": "Phase 0 is a true green-field install (nothing to reconcile against). Two constraints follow from the dual-lockfile oddity: (i) horizon-10 must use pnpm to match the committed pnpm-lock.yaml at the repo root (task already says this), and (ii) the existing packages/llm-http-proxy/package-lock.json that already sits on disk untracked must NOT be regenerated by an npm install \u2014 running `pnpm install` (no lockfile churn) or `pnpm add -D ai @ai-sdk/anthropic @ai-sdk/openai @ai-sdk/google` (lockfile churn within pnpm-lock.yaml) is the correct path. The success criterion about `package-lock.json` gitignore still holds: any new package-lock.json generated is still gitignored at package level."
+    },
+    {
+      "area": "horizon-9 dual-patch is committed and intact",
+      "finding": "src/interceptor.ts is the post-horizon-9 shape: file-header (lines 1-30) explicitly documents TWO interception surfaces ('1. http.ClientRequest.prototype.write/end ... 2. undici's global dispatcher via setGlobalDispatcher'); WrappingDispatcher class (lines 221-555) extends EventEmitter, tagged with [kDispatcherWrapper] Symbol; install() calls both patchPrototype and installUndiciDispatcher (lines 718-721); restore() calls unpatchPrototype and restoreUndiciDispatcher (lines 731-738); setGlobalDispatcher(getGlobalDispatcher()) round-trip via this.dispatcherWrapper identity check (lines 752-769); lazy-require for undici at module top (lines 78-87) with try/catch; AsyncIterable body tee (lines 302-398) for the fetch AsyncGenerator path. The comment block no longer claims http-only.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/interceptor.ts",
+      "implication": "The dual-patch is the load-bearing capture surface for SDK-issued fetch traffic in Node 22 \u2014 so horizon-10's success criterion (5) that the new SDK tests get entries.length === 1 WITHOUT a per-file createSdkFetchShim() override is provably testable against the same WrappingDispatcher surface already proven by horizon-9's global-fetch-capture.integration.test.ts. The shim becomes test-only surface; the dual-patch is the verification mechanism."
+    },
+    {
+      "area": "horizon-9 integration test template",
+      "finding": "src/global-fetch-capture.integration.test.ts has the canonical 'proven dual-patch' shape: top-level try/require of undici into a typed slot (lines 74-82); if (undiciInstalled && undici !== undefined) describe(...) else describe.skip(... , placeholderFn) (lines 208-217); beforeEach captures originalDispatcher = ud.getGlobalDispatcher() and installs a fresh Interceptor (lines 122-134); afterEach restores and asserts getGlobalDispatcher() === originalDispatcher via .toBe (line 145); test body uses ud.fetch(...) not globalThis.fetch and awaits two setImmediate ticks (lines 184-185); entries.length === 1 assertion. File-header explicitly documents Jest 29.7.0 + Node 22.14.0's globalThis.fetch lazy-loader bypass (lines 18-21).",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/global-fetch-capture.integration.test.ts",
+      "implication": "horizon-10 SDK suites can either rely on the SDK's internal default fetch (which under Jest 29+Node 22 may lazy-load a fresh undici that bypasses the dual-patch, per the documented jest-29-node-22-fetch-bridge-broken discovery) OR explicitly route via require('undici').fetch \u2014 the task's success criterion (5) explicitly disallows per-file fetch shims, so the plan MUST verify that the SDK's own internal default fetch DOES engage the dual-patch surface under Jest 29 + Node 22 BEFORE locking the no-shim invariant in. The .toBe identity assertion on getGlobalDispatcher is the load-bearing 'the patch did not leak' check \u2014 SDK tests must replicate it in their own afterEach, or a single SDK failure can poison subsequent suites."
+    },
+    {
+      "area": "horizon-7 raw-HTTPS gate template",
+      "finding": "src/{anthropic,openai,gemini}.integration.test.ts share an identical gate shape: top-level `const apiKey = process.env.{PROVIDER}_API_KEY` + `const envBaseUrl/Model = process.env.{PROVIDER}_{BASE_URL,MODEL}`; baseUrl/model resolved with `length > 0` empty-string guard; `const hasKey = apiKey !== undefined && apiKey.length > 0`; `const parsedUrl = new URL(baseUrl)` + `expectedUrlFragment = `${parsedUrl.hostname}${parsedUrl.pathname}``; gate as `if (hasKey) describe(...) else describe.skip(...)` (anthropic.gemini use `describe.skip('... (skip: ...)')`, openai uses a slightly more terse form); test body installs Interceptor, fires one node:https.request, awaits two `setImmediate(() => setImmediate(() => ...))` nested ticks (NOT two awaits \u2014 they are nested), then asserts entries.length === 1 + model substring + url contains expectedUrlFragment + both token counts >= 0 + JSON.stringify(entries[0]).not.toContain(apiKey ?? '__unset__'); interceptor.restore() in the finally; both req.on('error') and res.on('error') restore before done(err).",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/anthropic.integration.test.ts",
+      "implication": "The horizon-10 SDK suites MUST copy this template verbatim (the task explicitly says so). One nuance to preserve: the two-setImmediate flush is NESTED (`setImmediate(() => setImmediate(() => { try { ... } finally { restore(); done(); } }))`), not two sequential awaits \u2014 copying that nested pattern into the SDK suite (which is async, not done-callback) means `await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r));` after the await generateText. Also: the task's planned name `createSdkFetchShim()` differs from horizon-8's `createNodeHttpsFetch()`; both keep the node:https.request transport so the file-header / shape carries over."
+    },
+    {
+      "area": "jest testRegex picks up *.sdk.integration.test.ts with no config change",
+      "finding": "package.json jest config (lines 82-103) defines testRegex as '(/__tests__/.*|(\\.|/)(test|spec))\\.ts$' \u2014 the alternation accepts both *.{test,spec}.ts AND the *.{test,spec}.ts patterns emitted from any *.integration.test.ts / *.sdk.integration.test.ts file. There is no testPathIgnorePatterns. testEnvironment is 'node'. Modules listed in collectCoverageFrom are src/**/*.ts, so the new shim file IS coverage-eligible.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/package.json",
+      "implication": "No jest config change is needed for the new *.sdk.integration.test.ts files (this matches horizon-8's `test-file-discovery` finding). However, the test count baseline that the user wants captured (`npx jest --listTests | wc -l`) will grow by exactly 3 after the new files land \u2014 the planner must record the pre-horizon-10 count and the post-horizon-10 count separately, not just the delta."
+    },
+    {
+      "area": "tsconfig + @types/node@22 covers SDK Request type",
+      "finding": "tsconfig.json has `types: ['node', 'jest']`, target ES2022, module commonjs, strict true. @types/node is pinned to ^22.10.7 in devDependencies. @types/node@22 re-exports undici-types (the Request, Response, Headers, fetch globals live under lib.dom or are now mirrored in node types). The horizon-9 horizon-10 path uses RequestInfo | URL and RequestInit as type-only inputs.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/tsconfig.json",
+      "implication": "No new @types/* package install is needed for the shim's Request/Response typing \u2014 the SDK packages themselves ship types, and the global fetch Request/Response shape is reachable through @types/node@22's bundled undici-types / fetch globals. If the SDK's per-provider FetchFunction signature diverges from the shim's return type, the `satisfies` clause in the shim file will surface it at tsc time (per horizon-8 success-criterion (2) phase 2)."
+    },
+    {
+      "area": "undici-types type signatures match horizon-9 use",
+      "finding": "node_modules/undici-types/dispatcher.d.ts confirms Dispatcher extends EventEmitter with `dispatch(options: Dispatcher.DispatchOptions, handler: Dispatcher.DispatchHandlers): boolean` (line 17), matching the WrappingDispatcher structural type in src/interceptor.ts. node_modules/undici-types/global-dispatcher.d.ts confirms `setGlobalDispatcher<DispatcherImplementation extends Dispatcher>(dispatcher: D): void` and `getGlobalDispatcher(): Dispatcher` (lines 8-9) \u2014 note the return type does NOT include null; the install() guard at src/interceptor.ts:752 references `this.dispatcherWrapper` undefined-check instead. The horizon-9 type-shaped boundary is sound.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/node_modules/undici-types/global-dispatcher.d.ts",
+      "implication": "horizon-10 has no typing work to do on the dual-patch side. The WrappingDispatcher-as-Dispatcher cast in src/interceptor.ts:762 is the established pattern. The shim's createSdkFetchShim return type needs to satisfy the SDK providers' fetch option type from @ai-sdk/* (after install) \u2014 this is a downstream typecheck, not a horizon-9 surface."
+    },
+    {
+      "area": "zero-hard-deps + no-new-exported-symbols invariant",
+      "finding": "src/index.ts (lines 1-34) exports Interceptor, deriveUrl, captureCallerTrace, shouldCapture, defaultEstimateInputTokens, defaultExtractOutputTokens, defaultParser, ProviderParser/ParseResult types, redact + DEFAULT_*, RedactionConfig type, consoleLogger/noopLogger + Logger type, otelSpanLogger, InterceptorOptions/LlmLogEntry/TokenCounter/RequestTransformer/ResponseTransformer types, and VERSION='0.2.0'. No SDK package is re-exported. logger.test.ts:127-129 and 175-182 verify that LlmLogEntry shape stays a 6-field baseline plus optional masked/error fields, and that interceptor.ts source does not contain inline JSON.stringify(entry).",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/index.ts",
+      "implication": "The shim file src/sdk-fetch-shim.ts MUST NOT be re-exported from src/index.ts (the task already locks this in). The SDK packages MUST stay in devDependencies only. The `no-new-exported-symbols` invariant holds at the index.ts level \u2014 the shim is test-only surface. The horizon-10 baseline's lint gate must catch any accidental new export. VERSION stays at 0.2.0."
+    },
+    {
+      "area": "default parser does NOT recognize Gemini usageMetadata camelCase",
+      "finding": "src/provider-parser.ts lines 86-102 (readUsageTokens) only checks usage.completion_tokens (OpenAI) then usage.output_tokens (Anthropic); it never inspects usageMetadata or camelCase promptTokenCount/candidatesTokenCount/totalTokenCount. horizon-7's gemini test already documents this in its file-header comment, and the assertion shape is `>= 0` not authoritative counts.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/provider-parser.ts",
+      "implication": "horizon-10's SDK Gemini suite must use the same `>= 0` non-negative assertion shape for outputTokens (the defaultParser will return 0 or the chars/4 fallback). A user-supplied providerParser override is NOT in scope. Any token-count rubric dimension that asserts a positive outputTokens number on Gemini is wrong and would regress the test."
+    },
+    {
+      "area": "decisions.md existing entries \u2014 format and constraints",
+      "finding": "decisions.md has 14 dated bullet entries from 2026-08-28 through 2026-08-30; format is `- YYYY-MM-DD | horizon N | <summary> \u2014 because <rationale>`. No `horizon 10` entry exists yet. The horizon-8/horizon-9 entries that name the shim or dual-patch are absent from this file (the horizon-8 roadmap's transport decision was never ratified in writing \u2014 that is precisely what the user wants horizon-10 to fix).",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/docs/roadmaps/llm-http-proxy/decisions.md",
+      "implication": "horizon-10's decision entry must be dated `2026-08-30 | horizon 10 | ...` (matching the existing dated-bullet convention), record option (b) (per-call fetch shim on node:https.request), reference the horizon-8 load-bearing-bypass-risk and the horizon-9 dual-patch ratification chain, and explicitly note that option (c) undici dispatcher patching IS the production capture surface now that horizon-9 has landed it. The 'ratification' framing matters \u2014 this is the horizon-8 decision being written down, not a new decision."
+    },
+    {
+      "area": "horizon-09 status filename mismatch with project convention",
+      "finding": "docs/roadmaps/llm-http-proxy/horizons/horizon-09-undici-dual-patch.status.json exists. Horizons 1-7 follow the convention `{NN}-{slug}-roadmap.status.json` (e.g. horizon-07-live-provider-smoke-tests-roadmap.status.json). Horizons 8 and 9 follow the same `{NN}-{slug}-roadmap.status.json` convention at the file base. However, the actual file on disk for horizon 9 is named horizon-09-undici-dual-patch.status.json \u2014 missing the `-roadmap` infix.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/docs/roadmaps/llm-http-proxy/horizons/horizon-09-undici-dual-patch.status.json",
+      "implication": "The task explicitly requires renaming this file to horizon-09-undici-dual-patch-roadmap.status.json to match the convention. The planner should treat this as a one-line `git mv` (or filesystem rename) tied to the horizon-10 closeout, with no semantic change to the JSON body."
+    },
+    {
+      "area": "lazy-require pattern precedent for optional peer deps",
+      "finding": "src/otel.ts lines 29-44 establish the lazy-require pattern for optional peer deps: type alias `OtelApi = typeof import('@opentelemetry/api')` for compile-time typing; module-level let; try/catch around `require(...) as OtelApi`; on failure leave the handle undefined and downstream calls become inert no-ops. src/interceptor.ts lines 76-87 reuse the same pattern for undici (type `UndiciApi = typeof import('undici')`; same try/catch). Both files have an eslint-disable-next-line for @typescript-eslint/no-require-imports.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/otel.ts",
+      "implication": "If horizon-10 ever needs to add an optional-peer posture to the shim (it does not today \u2014 the shim is test-only, always installed in test env), the same pattern is the precedent. But more importantly: the shim's design as test-only surface means it can do a top-level `import { request as httpsRequest } from 'node:https'` (no lazy-require needed) \u2014 the SDK packages themselves are in devDependencies, so a test run that hits the shim has them resolvable. This keeps the shim simpler than the interceptor/otel pattern."
+    },
+    {
+      "area": "withEntries helper + RUN_BENCH opt-in gate pattern",
+      "finding": "src/interceptor.test.ts lines 75-91 define withEntries<T>(options, run): { entries, result } \u2014 constructs fresh Interceptor with a logger that pushes into entries, installs, runs the closure, awaits two sequential setImmediate ticks, restores. This is the unit-test-shaped flush discipline. src/benchmark.test.ts lines 317 and 359-366 define `const RUN_BENCH = process.env.RUN_BENCH === '1'` + `if (RUN_BENCH) describe(...) else describe.skip(...)` \u2014 the canonical opt-in gate for the latency benchmark.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/llm-http-proxy/src/interceptor.test.ts",
+      "implication": "horizon-10 SDK suites should NOT use withEntries (it is a unit-test helper) \u2014 they need the live HTTPS flow with two setImmediate flushes via the res.on('end', ... => setImmediate(() => setImmediate(...))) pattern from horizon-7 (NOT two sequential awaits \u2014 the nested setImmediate form preserves the 'response end fires before the first setImmediate' ordering the unit-test pattern also relies on). For non-SDK latency benchmarks, the RUN_BENCH gate stays unchanged. The two-setImmediate flush pattern is the de-facto 'await before reading entries[]' discipline across the whole package \u2014 the SDK suites are the next consumers."
+    }
+  ],
+  "requiredMaterials": [
+    {
+      "name": "npm registry access for Vercel AI SDK v5.x packages",
+      "kind": "api",
+      "whyNeeded": "Phase 0 must install `ai`, `@ai-sdk/anthropic`, `@ai-sdk/openai`, `@ai-sdk/google` into packages/llm-http-proxy/devDependencies to satisfy the shim's typing surface and the three SDK integration tests; without registry reach the install step blocks the rest of the horizon.",
+      "acquisitionNote": "Endpoint: registry.npmjs.org (default pnpm registry). Install via `pnpm add -D ai @ai-sdk/anthropic @ai-sdk/openai @ai-sdk/google` from packages/llm-http-proxy to keep the committed pnpm-lock.yaml at the repo root as the source of truth and avoid regenerating the stale on-disk packages/llm-http-proxy/package-lock.json. Pin to v5.x major (^5.0.0) matching the horizon-8 SDK transport-decision scope; no version-exact pinning is required. Network egress required only at install time; no runtime network access to npm is needed after install."
+    },
+    {
+      "name": "Per-provider API key credentials (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY with GOOGLE_API_KEY fallback)",
+      "kind": "credential",
+      "whyNeeded": "Success criteria (d) and (e) require each *.sdk.integration.test.ts to be gated on its per-provider API key env var and to run one real generateText through the SDK. Without the env vars set, the three SDK suites stay skipped via describe.skip and the dual-patch end-to-end verification (entries.length === 1 per provider) cannot execute.",
+      "acquisitionNote": "User-supplied via shell `export` only \u2014 no automated acquisition, no .env file, no secret manager hookup. For the Gemini suite, GEMINI_API_KEY is preferred with GOOGLE_API_KEY as the fallback env-var name (matches @ai-sdk/google v5 conventions). Empty-string values must be treated as unset (length > 0 guard per horizon-7 gate shape). Without these env vars the horizon reduces to a green-typecheck + green-skip-skeleton verification, which does not satisfy success criterion (e)."
+    },
+    {
+      "name": "Vercel AI SDK v5 FetchFunction type signature snapshot per provider",
+      "kind": "knowledge",
+      "whyNeeded": "createSdkFetchShim()'s return type must satisfy the per-provider fetch option type from `@ai-sdk/anthropic`, `@ai-sdk/openai`, `@ai-sdk/google` v5 at tsc time, otherwise the shim fails the typed-and-gates-green rubric and the SDK suites won't compile. This drives the function signature, the generic constraints, and the Request/Response translation shape.",
+      "acquisitionNote": "Not genuinely external \u2014 reachable post-install from packages/llm-http-proxy/node_modules/@ai-sdk/{anthropic,openai,google}/dist/index.d.ts (after Phase 0 install runs). Capture the snapshot only as a planning reference, not as a material to fetch beforehand; the install step is what makes this material exist on disk. If the v5 signature shifts before Phase 0 install completes, tsc --noEmit will fail at compile time and the rubric will surface the drift."
+    },
+    {
+      "name": "pnpm binary at the matching lockfile-protocol version",
+      "kind": "tool",
+      "whyNeeded": "The committed pnpm-lock.yaml at the repo root is the package-manager lockfile of record; the existing packages/llm-http-proxy/package-lock.json is a stale artifact and must not be regenerated by an `npm install` invocation. The Phase 0 install must run through pnpm to keep the zero-hard-deps invariant and the gitignored-package-lock.json convention intact.",
+      "acquisitionNote": "Acquire via `corepack enable && corepack prepare pnpm@<version-from-lockfile> --activate` or `npm install -g pnpm`; the version string should be read from the packageManager field (if present) or the pnpm-lock.yaml lockfileVersion header. Run from packages/llm-http-proxy with `pnpm add -D ...` (lockfile churn within pnpm-lock.yaml) or `pnpm install --frozen-lockfile=false` (no churn if the four SDK packages are already in the lockfile from a prior dry run). No re-resolution against npm is needed for non-SDK packages."
+    }
+  ],
+  "phases": [
+    {
+      "id": "install-sdk-devdeps",
+      "order": 0,
+      "name": "Install Vercel AI SDK devDependencies",
+      "goal": "Add ai, @ai-sdk/anthropic, @ai-sdk/openai, and @ai-sdk/google to packages/llm-http-proxy/devDependencies via pnpm so the SDK providers are resolvable from node_modules and tsc --noEmit can type-check the SDK fetch shim against the SDK providers' fetch option signature.",
+      "rationale": "Both the shim's return type and the three SDK integration tests depend on the SDK packages being installed locally. Installing them as devDependencies (not regular dependencies) preserves the zero-hard-deps invariant (dependencies stays at {}) that the package has held since horizon1. pnpm is the package manager whose lockfile is committed at the repo root, so using pnpm keeps the lockfile of record accurate and avoids regenerating the stale on-disk packages/llm-http-proxy/package-lock.json (already gitignored at package level).",
+      "filesAffected": [
+        "packages/llm-http-proxy/package.json",
+        "pnpm-lock.yaml (repo root)",
+        ".gitignore at package level (unchanged, just verified)"
+      ],
+      "changes": [
+        "From packages/llm-http-proxy, run `pnpm add -D ai @ai-sdk/anthropic @ai-sdk/openai @ai-sdk/google` (NOT `npm install`, which would regenerate the stale gitignored package-lock.json).",
+        "Verify packages/llm-http-proxy/package.json shows the four new entries in devDependencies with dependencies unchanged at {} and peerDependencies unchanged (zero-hard-deps invariant).",
+        "Verify pnpm-lock.yaml at the repo root now has entries for ai and the three @ai-sdk/* packages; verify any regenerated package-lock.json stays gitignored (line 5 of packages/llm-http-proxy/.gitignore).",
+        "Run `npm run typecheck` (tsc --noEmit) to confirm the new types resolve cleanly with no consumer code yet referencing them."
+      ],
+      "boundedContext": "package-management / devDependency surface",
+      "layer": "infrastructure",
+      "blastRadius": "small",
+      "inputs": [
+        "current packages/llm-http-proxy/package.json (devDependencies lists only @eslint/js, @opentelemetry/api, @types/jest, @types/node@^22.10.7, jest@^29.7.0, ts-jest, typescript@^5.7.3, etc.; dependencies is {})",
+        "pnpm-lock.yaml at the repo root (lockfile of record)",
+        "packages/llm-http-proxy/.gitignore line 5 (ignores package-lock.json)",
+        "pnpm binary at the lockfile-protocol version"
+      ],
+      "expectedResult": "packages/llm-http-proxy/package.json lists ai + @ai-sdk/anthropic + @ai-sdk/openai + @ai-sdk/google in devDependencies with dependencies and peerDependencies unchanged; pnpm-lock.yaml at the repo root has the four new entries; tsc --noEmit stays green; any regenerated package-lock.json stays gitignored.",
+      "dependsOn": [],
+      "compensation": "Revert via `pnpm remove ai @ai-sdk/anthropic @ai-sdk/openai @ai-sdk/google` and `git checkout pnpm-lock.yaml packages/llm-http-proxy/package.json`. The dependency surface is local to packages/llm-http-proxy with no external consumers, so removal is a clean git revert.",
+      "rubric": [
+        {
+          "id": "sdk-devdeps-placement",
+          "label": "SDK packages placed in devDependencies",
+          "ruleStatement": "All four SDK packages must be installed under the devDependencies key in packages/llm-http-proxy/package.json \u2014 never under dependencies or peerDependencies. Scale: 10 = each of ai, @ai-sdk/anthropic, @ai-sdk/openai, @ai-sdk/google appears exactly once under devDependencies with a non-empty version specifier and is absent from every other top-level dependency key; 8 = expected for competent install (all four in devDependencies with version strings present); minScore (bar for ACCEPTABLE) = 7 means all four names appear under devDependencies.",
+          "passCriteria": [
+            "Open packages/llm-http-proxy/package.json and confirm the 'devDependencies' object contains entries named exactly 'ai', '@ai-sdk/anthropic', '@ai-sdk/openai', '@ai-sdk/google'",
+            "Confirm 'dependencies' has no entry whose name is 'ai' or starts with '@ai-sdk/'",
+            "Each of the four entries has a non-empty string value (a version specifier such as ^x.y.z or x.y.z, not null and not empty string)"
+          ],
+          "failureExamples": [
+            "Developer omitted -D and ran plain `pnpm add ai @ai-sdk/anthropic @ai-sdk/openai @ai-sdk/google` \u2014 all four SDKs landed under dependencies, leaving devDependencies unchanged and breaking the zero-hard-deps invariant at the surface level",
+            "Developer ran `pnpm add -D ai @ai-sdk/anthropic @ai-sdk/openai` (no @ai-sdk/google) \u2014 only three SDKs are present in devDependencies and the horizon-10 google suite will fail at require.resolve time",
+            "Developer used a typo'd package name (e.g., '@ai-sdk/anthropics' with a trailing 's') so the actual anthropic package is missing from devDependencies and the lockfile"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "zero-hard-deps-invariant",
+          "label": "dependencies and peerDependencies remain empty of SDKs",
+          "ruleStatement": "The package has held dependencies={} since horizon1. After this install, dependencies must still equal {} and peerDependencies must contain no SDK entry \u2014 the invariant is verified byte-identically against the pre-phase package.json. Scale: 10 = dependencies={} and peerDependencies is either absent or contains zero entries (no SDK, no anything new); 8 = expected for competent install (dependencies={}, peerDependencies unchanged from its pre-phase state with no SDK entries); minScore (bar for ACCEPTABLE) = 7 means dependencies={} and peerDependencies contains no SDK.",
+          "passCriteria": [
+            "In packages/llm-http-proxy/package.json, the 'dependencies' key value is exactly the empty object {}",
+            "If a 'peerDependencies' key exists, no entry's name starts with '@ai-sdk/' or equals 'ai'",
+            "`git diff packages/llm-http-proxy/package.json` against the pre-phase commit shows additions only under devDependencies \u2014 the dependencies and peerDependencies lines are byte-identical to the prior commit"
+          ],
+          "failureExamples": [
+            "Developer ran `pnpm add -P` (capital P = peer) instead of `-D`, putting all four SDKs under peerDependencies while devDependencies stays empty \u2014 the invariant is broken even though the lockfile looks correct",
+            "Pnpm auto-promoted one of the SDKs to peerDependencies because of a hoisting warning the developer ignored \u2014 peerDependencies now lists @ai-sdk/anthropic despite no manual flag, and a future `pnpm install` on a downstream consumer will silently install it",
+            "Developer hand-edited package.json and accidentally placed the SDKs under a newly-invented top-level key 'peerDependencies' that did not exist before, leaving dependencies={} but adding a fresh dependency-bearing key"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "pnpm-lockfile-discipline",
+          "label": "pnpm-lock.yaml updated at repo root; no stray package-lock.json",
+          "ruleStatement": "The lockfile of record is pnpm-lock.yaml at the repo root. This phase must update that file with the four new SDK entries and must not generate or track a packages/llm-http-proxy/package-lock.json. Scale: 10 = pnpm-lock.yaml at the repo root has new entries for all four SDKs AND `git ls-files packages/llm-http-proxy/package-lock.json` returns empty AND the .gitignore at line 5 of packages/llm-http-proxy/.gitignore still reads 'package-lock.json'; 8 = expected for competent install (pnpm-lock.yaml updated, no tracked package-lock.json); minScore (bar for ACCEPTABLE) = 7 means pnpm-lock.yaml at the repo root is the only lockfile touched and no package-lock.json is tracked by git.",
+          "passCriteria": [
+            "From the repo root, run `grep -E '/(ai|@ai-sdk/(anthropic|openai|google))@' pnpm-lock.yaml` and confirm at least four non-comment matches appear in the packages section",
+            "From the repo root, run `git ls-files packages/llm-http-proxy/package-lock.json` \u2014 output is empty",
+            "Run `sed -n '5p' packages/llm-http-proxy/.gitignore` and confirm the line reads 'package-lock.json' (this phase verifies but does not modify it)"
+          ],
+          "failureExamples": [
+            "Developer ran `npm install` (instead of `pnpm add -D`) inside packages/llm-http-proxy \u2014 a fresh packages/llm-http-proxy/package-lock.json was generated AND pnpm-lock.yaml at the repo root was NOT updated, leaving the lockfile of record stale even though the .gitignore still hides the stray file",
+            "Developer ran pnpm from packages/llm-http-proxy with a workspace-root flag that scoped the install locally \u2014 pnpm-lock.yaml at the repo root still has no entries for the new SDKs and CI will see an uncommitted lockfile drift",
+            "Developer force-added the generated package-lock.json with `git add -f packages/llm-http-proxy/package-lock.json` so it is now tracked despite the .gitignore \u2014 CI on the next PR will diff a large binary lockfile"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "type-resolves-cleanly",
+          "label": "tsc --noEmit stays green; SDK modules resolvable from packages/llm-http-proxy/node_modules",
+          "ruleStatement": "After the install, tsc --noEmit must exit 0 from packages/llm-http-proxy and the four SDK packages must resolve as type-only modules from that package's resolution root \u2014 this is what makes the downstream SDK shim and horizon-10 suites import-safe. Scale: 10 = `npm run typecheck` exits 0, each SDK's package.json is present in packages/llm-http-proxy/node_modules (or reachable through the pnpm virtual store symlinks), and a smoke `import type` from each of the four SDKs would resolve; 8 = expected for competent install (tsc clean, packages resolvable); minScore (bar for ACCEPTABLE) = 7 means tsc --noEmit exits 0 and the SDKs are reachable from the package.",
+          "passCriteria": [
+            "Run `cd packages/llm-http-proxy && npm run typecheck` \u2014 process exits with code 0 and no TS errors mentioning '@ai-sdk/' or 'ai'",
+            "From the repo root, run `ls packages/llm-http-proxy/node_modules/@ai-sdk/` and confirm three subdirectories named 'anthropic', 'openai', 'google' exist",
+            "From the repo root, run `node -e \"console.log(require.resolve('ai', { paths: ['./packages/llm-http-proxy'] }))\"` \u2014 prints a path ending in `node_modules/ai/package.json` and exits 0"
+          ],
+          "failureExamples": [
+            "Pnpm's strict node_modules layout hoisted the SDKs into packages/llm-http-proxy/node_modules/.pnpm/ but did not create the symlinks under packages/llm-http-proxy/node_modules/@ai-sdk/, so `import type { AnthropicProvider } from '@ai-sdk/anthropic'` fails with TS2307 'Cannot find module' even though pnpm-lock.yaml looks correct",
+            "Developer installed @ai-sdk/anthropic@1.x but the SDK only ships its own types at 2.x \u2014 tsc reports TS2304 / TS7016 'Could not find a declaration file for module @ai-sdk/anthropic' even though require.resolve succeeds",
+            "Network or registry hiccup left a half-installed ai core package \u2014 packages/llm-http-proxy/node_modules/ai/package.json exists but node_modules/@ai-sdk/google/package.json is missing, so tsc resolves ai but fails on the SDKs and the subsequent horizon-10 integration tests cannot import"
+          ],
+          "minScore": 7
+        }
+      ],
+      "healerHint": "If a dimension fails, the most common cause is mixing up pnpm and npm (running `npm install` regenerates packages/llm-http-proxy/package-lock.json and skips pnpm-lock.yaml) \u2014 the fastest fix is to delete any generated package-lock.json, `git checkout packages/llm-http-proxy/package.json`, and re-run `pnpm add -D ai @ai-sdk/anthropic @ai-sdk/openai @ai-sdk/google` from inside packages/llm-http-proxy."
+    },
+    {
+      "id": "add-sdk-fetch-shim-and-record-decision",
+      "order": 1,
+      "name": "Add SDK fetch shim and ratify transport decision",
+      "goal": "Add src/sdk-fetch-shim.ts exporting createSdkFetchShim() \u2014 a factory returning a fetch function usable as the SDK providers' fetch option \u2014 that translates the SDK Web Request shape into a node:https.request call and the IncomingMessage response back into a Web Response. Append one dated bullet to docs/roadmaps/llm-http-proxy/decisions.md ratifying the horizon-8 option B (per-call fetch shim on node:https.request) as the SDK transport strategy.",
+      "rationale": "The shim is the test-time escape hatch the horizon-8 plan deferred; writing it now closes horizon-8's deliverables even though the SDK integration tests in this horizon do not pass it to the providers (the horizon-9 dual-patch is the verification surface, not the shim). Ratifying the transport decision in decisions.md turns an implicit horizon-8 call into a written, dated constraint so the next horizon does not re-derive it. The decisions.md append is a one-line dated bullet (per the existing 14-entry format `- YYYY-MM-DD | horizon N | <summary> \u2014 because <rationale>`) folded into this phase as bookkeeping tied to the shim's existence.",
+      "filesAffected": [
+        "packages/llm-http-proxy/src/sdk-fetch-shim.ts (new)",
+        "docs/roadmaps/llm-http-proxy/decisions.md (append one dated bullet)"
+      ],
+      "changes": [
+        "Create packages/llm-http-proxy/src/sdk-fetch-shim.ts exporting `createSdkFetchShim(): (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>`. Use top-level `import { request as httpsRequest } from 'node:https'` (no lazy-require needed \u2014 the SDK packages are in devDependencies so test runs resolve them).",
+        "Translate the Web Request to node:https.request: copy method, headers (lowercased), and body (string | Buffer | undefined from init.body); collect response body chunks from the IncomingMessage and return a Web Response with status, statusText, headers (Headers object), and a ReadableStream body built from the buffered chunks.",
+        "Add a file-header comment block asserting the shim is test-only surface, NOT re-exported from src/index.ts (zero-hard-deps + no-new-exported-symbols invariant). Do NOT touch src/index.ts.",
+        "Type the return value with a `satisfies` clause (or explicit cast) against each installed @ai-sdk/* provider's FetchFunction type so tsc --noEmit locks the contract at compile time.",
+        "Append to docs/roadmaps/llm-http-proxy/decisions.md a new dated bullet: `- 2026-08-30 | horizon 10 | SDK transport uses option B (per-call fetch shim on node:https.request, factory createSdkFetchShim) \u2014 because horizon-8 named this as the bypass-risk hedge against the SDK lazy-loading its own undici under Jest 29+Node 22, and horizon-9's setGlobalDispatcher dual-patch now makes the shim a test-only escape hatch rather than a per-call capture seam; the SDK tests in horizon-10 rely on the dual-patch surface alone and do not pass the shim to the providers.`",
+        "Run `npm run typecheck && npm run lint && npm run build` \u2014 all three must stay green; the shim's return type is the load-bearing typecheck."
+      ],
+      "boundedContext": "SDK-transport surface (shim) + decisions ledger",
+      "layer": "cross-cutting",
+      "blastRadius": "medium",
+      "inputs": [
+        "installed @ai-sdk/{anthropic,openai,google} packages and ai from Phase 0 (resolvable from packages/llm-http-proxy/node_modules)",
+        "@types/node@22 fetch globals (Request, Response, RequestInit, Headers \u2014 already pinned in devDependencies)",
+        "node:https.request API (Node22 built-in)",
+        "existing docs/roadmaps/llm-http-proxy/decisions.md (14 dated bullets in `- YYYY-MM-DD | horizon N | ...` format)"
+      ],
+      "expectedResult": "packages/llm-http-proxy/src/sdk-fetch-shim.ts exists, exports createSdkFetchShim() with a return type compatible with the @ai-sdk/* provider fetch option, compiles under tsc --noEmit, and is NOT re-exported from src/index.ts; docs/roadmaps/llm-http-proxy/decisions.md has a new `2026-08-30 | horizon 10 | ...` bullet recording option B.",
+      "dependsOn": [
+        "install-sdk-devdeps"
+      ],
+      "compensation": "`git rm packages/llm-http-proxy/src/sdk-fetch-shim.ts` and revert the appended decisions.md bullet. No external consumers (test-only surface, not re-exported from the public API).",
+      "rubric": [
+        {
+          "id": "shim-exports-create-sdk-fetch-shim",
+          "label": "Shim file exports createSdkFetchShim factory with correct signature",
+          "ruleStatement": "The deliverable's primary surface must expose createSdkFetchShim with a signature of (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>; this is the load-bearing shape criterion (c).10 means the factory is exported exactly once with that signature and is importable from the declared path with zero ceremony; 8 is a competent implementation that meets the signature and exports cleanly; minScore is the bar for ACCEPTABLE (the shape is real and resolvable).",
+          "passCriteria": [
+            "packages/llm-http-proxy/src/sdk-fetch-shim.ts exists on disk and contains exactly one named export: createSdkFetchShim (no default export, no re-export from this module).",
+            "Importing createSdkFetchShim via `import { createSdkFetchShim } from './sdk-fetch-shim'` from the sibling file resolves to a function whose .length is 1 and whose declared return type is Promise<Response>.",
+            "The first parameter is annotated as RequestInfo | URL (or its `unknown`-shaped equivalent) and the optional second parameter is annotated as RequestInit (or includes body, method, headers in its declared shape)."
+          ],
+          "failureExamples": [
+            "The file exists but exports a default object containing the factory instead of a named export \u2014 every consumer that wrote `import { createSdkFetchShim } from ...` breaks even though `node -e \"require('./sdk-fetch-shim')\"` seems to work.",
+            "The factory is declared as `function createSdkFetchShim(): any` because the author assumed `any` would be loose enough to satisfy the SDK callers; consumers downstream then get Promise<any> and lose the Web Response contract silently at compile time.",
+            "The first parameter is typed `string` instead of `RequestInfo | URL`, so passing a Request object (which is what the SDK providers do in practice) fails tsc at the SDK call site even though `node:https.request` would have accepted it after the internal cast."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "shim-type-locks-sdk-fetch-contract",
+          "label": "Return type satisfies every installed @ai-sdk/* provider FetchFunction",
+          "ruleStatement": "The shim's return value must be typed (via satisfies clause or explicit cast) against the FetchFunction type of each installed @ai-sdk/{anthropic,openai,google} provider so that `tsc --noEmit` locks the contract against the real SDK type \u2014 not just any function. 10 means each provider's FetchFunction is referenced in the satisfies clause and a fresh typecheck fails if the shape drifts; 8 means the typecheck passes against the installed providers with no `any`/`unknown` escape hatches; minScore is the bar for ACCEPTABLE (the contract is locked, not trusted).",
+          "passCriteria": [
+            "The file imports the FetchFunction (or its enclosing options type) from at least one of @ai-sdk/anthropic, @ai-sdk/openai, or @ai-sdk/google \u2014 visible as an import statement in the file.",
+            "The factory's return type uses a `satisfies ...FetchFunction` clause or a wrapping function whose declared return type is assignable to FetchFunction \u2014 grep for `satisfies` or a `: (input: ... => Promise<...>)` cast touching a FetchFunction reference.",
+            "Running `npm run typecheck` from packages/llm-http-proxy exits 0 with the new file present (no tsc errors mentioning FetchFunction, satisfies, or provider types).",
+            "No occurrence of `: any`, `as any`, or `// @ts-expect-error` inside sdk-fetch-shim.ts \u2014 the typecheck is doing the locking, not the author."
+          ],
+          "failureExamples": [
+            "The author typed the return as `Promise<Response>` (which matches the web standard) but did not anchor it against any SDK FetchFunction \u2014 when @ai-sdk/google later bumps to a FetchFunction signature that drops a method overload, the shim compiles fine in isolation but fails inside the horizon-10 SDK integration test at the assignment site.",
+            "The author used a single `satisfies AnthropicFetchFunction` clause but `openai` and `google` ship subtly different signatures (e.g., openai's FetchFunction is `(input, init?) => Promise<Response>` with `input` as `string | URL | Request`); the openai suite then typechecks green via structural compat in this repo but breaks the moment the openai package tightens its FetchFunction generic.",
+            "The author cast the return value to `any` to silence a single tsc error about a missing method on the shim's response \u2014 the gate passes but every SDK provider downstream now has untyped errors."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "shim-translation-roundtrip-correctness",
+          "label": "Translation between Web Request/Response and node:https round-trips bytes correctly",
+          "ruleStatement": "The shim must translate the SDK's Web Request shape into a node:https.request call that preserves method, headers (lowercased), and body (string | Buffer | undefined from init.body), and translate the IncomingMessage back into a Web Response carrying status, statusText, headers, and a ReadableStream body built from the buffered chunks. 10 means a round-trip test against a real local https server returns identical bytes and headers with a non-empty body; 8 means the code handles the documented cases (string body, headers, status) and a single representative round-trip works; minScore is the bar for ACCEPTABLE (no obvious byte or header loss on the happy path).",
+          "passCriteria": [
+            "Header copy goes through a lowercasing step (e.g., a Headers object is constructed from the IncomingMessage's raw headers before being exposed on the Response) \u2014 visible as either `new Headers(...)` or an explicit `.toLowerCase()` pass in the file.",
+            "The IncomingMessage body is collected by listening for 'data' events until 'end' fires, then wrapped in a ReadableStream (not returned as a Node Readable, not returned as a string); grep for `on('data'`, `on('end'`, and `new ReadableStream` (or `Readable.from`).",
+            "The Response carries `status` (number from res.statusCode) and `statusText` (string from res.statusMessage) \u2014 both field names appear in the constructor call to `new Response(...)` or equivalent.",
+            "The body branches cover at least `string` and `undefined` in the init.body handling \u2014 `if (init?.body !== undefined)` or an explicit `typeof init.body === 'string'` check is visible."
+          ],
+          "failureExamples": [
+            "The author forwards res.headers directly into the Response constructor without lowercasing, so a server that sets `Content-Type` shows up as `content-type` on the SDK side but a consumer that reads via `response.headers.get('Content-Type')` (the form the SDKs use) gets null \u2014 passes a quick `Object.keys(response.headers)` smoke test but fails any real SDK call.",
+            "The author returns the IncomingMessage wrapped in a Node Readable instead of a Web ReadableStream, so the SDK's `await response.text()` hangs forever (Node Readable is not a ReadableStream under the Web stream protocols); a manual `fetch(url)` works but the SDK stalls \u2014 the failure shows up only in horizon-10's SDK integration tests, not in this phase.",
+            "The author awaits `res.on('end', resolve)` but forgot to drain the body into a buffer before constructing the Response, so the stream is empty by the time `new Response(stream)` runs \u2014 passes typecheck and lint, returns `{ status: 200 }` with an empty body."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "shim-stays-test-only-surface",
+          "label": "Shim is NOT re-exported from src/index.ts and is marked test-only at file scope",
+          "ruleStatement": "The shim must remain a test-only surface \u2014 it must not appear in src/index.ts's export surface, and the file itself must carry a header comment asserting its test-only status (zero-hard-deps + no-new-exported-symbols invariant). 10 means src/index.ts is untouched, the header comment names the test-only purpose, and no other production source file imports from sdk-fetch-shim; 8 means the file is importable from test code and absent from the public API; minScore is the bar for ACCEPTABLE (the public API surface is unchanged and the file declares its scope).",
+          "passCriteria": [
+            "`git diff src/index.ts` is empty after the phase \u2014 the public barrel file is byte-identical to its pre-phase state.",
+            "sdk-fetch-shim.ts opens with a comment block whose first non-comment line is not an export \u2014 the comment contains the word 'test-only' or equivalent ('not re-exported', 'internal test surface', 'not for production use').",
+            "`grep -R \"sdk-fetch-shim\" packages/llm-http-proxy/src --include=\"*.ts\"` returns hits only inside test files (*.test.ts, *.integration.test.ts, *.sdk.integration.test.ts) \u2014 no production source imports the shim.",
+            "No new dependency is added to packages/llm-http-proxy/package.json (the shim uses only node:https and the @types/node fetch globals already pinned in devDependencies)."
+          ],
+          "failureExamples": [
+            "The author re-exports createSdkFetchShim from src/index.ts 'for convenience' so tests can `import { createSdkFetchShim } from 'llm-http-proxy'` \u2014 this is exactly the leak the horizon-8 plan deferred; downstream consumers may start depending on the shim, and reversing it becomes a breaking change.",
+            "The author adds a runtime dependency (e.g., `node-fetch`, `undici`) to packages/llm-http-proxy/package.json because `node:https.request` had a typing gap they didn't want to wrestle with \u2014 this violates the zero-hard-deps invariant and silently enlarges the install surface for every downstream consumer.",
+            "The author omits the file-header comment, and a later contributor adds an `export * from './sdk-fetch-shim'` to src/index.ts under the assumption that anything in src/ is fair game \u2014 the test-only invariant was unenforceable without an in-file declaration."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "decisions-ledger-ratifies-option-b",
+          "label": "decisions.md gains a dated bullet recording option B as the SDK transport",
+          "ruleStatement": "docs/roadmaps/llm-http-proxy/decisions.md must gain exactly one new dated bullet recording option B as the chosen SDK transport strategy, in the existing `- YYYY-MM-DD | horizon N | <summary> \u2014 because <rationale>` format, dated 2026-08-30, tagged `horizon 10`.10 means the bullet names option B explicitly, cites the horizon-8 hedging rationale, and matches the 14-bullet format exactly; 8 means the bullet is correctly formatted, dated, and horizon-tagged with the option-B summary; minScore is the bar for ACCEPTABLE (the decision is recorded and findable).",
+          "passCriteria": [
+            "The file's line count is exactly the previous line count + 1 (one new bullet appended, no other edits).",
+            "The new bullet begins with `- 2026-08-30 | horizon 10 |` and references both `option B` and the `node:https.request` shim (the word 'option B' and the phrase 'node:https' both appear in the new bullet).",
+            "The bullet includes a `\u2014 because` clause naming horizon-8 as the original hedging rationale and horizon-9's setGlobalDispatcher dual-patch as the reason the shim is now test-only.",
+            "All14 pre-existing dated bullets remain byte-identical to their pre-phase state \u2014 `git diff docs/roadmaps/llm-http-proxy/decisions.md` shows a single appended line."
+          ],
+          "failureExamples": [
+            "The author appends the bullet dated `2026-08-29` (yesterday) or `2026-08-31` (tomorrow) because they copied the date from a stale example \u2014 the date is the audit anchor and must match today.",
+            "The author writes the bullet as a multi-line block with `**bold**` or a sub-list, breaking the grep-for-`YYYY-MM-DD | horizon N` pattern that downstream tooling relies on to enumerate entries.",
+            "The author writes `horizon 9 |` (off by one) because they conflated horizon-9 (the dual-patch) with horizon-10 (this phase), so the bullet gets attributed to the wrong decision surface and the ledger is silently misnumbered.",
+            "The bullet omits the `\u2014 because` rationale entirely, so the entry reads like a status update rather than a decision \u2014 a future horizon-11 reader cannot tell why option B was chosen over option A without digging into git history."
+          ],
+          "minScore": 7
+        }
+      ],
+      "healerHint": "The most likely failure is a tsc error in sdk-fetch-shim.ts because the return type was not anchored to a real @ai-sdk/* provider FetchFunction \u2014 fix by adding `satisfies AnthropicFetchFunction` (or the equivalent for each installed provider) on the factory's return type and re-running `npm run typecheck`."
+    },
+    {
+      "id": "add-anthropic-sdk-integration-test",
+      "order": 2,
+      "name": "Add Anthropic SDK integration test",
+      "goal": "Add packages/llm-http-proxy/src/anthropic.sdk.integration.test.ts that gates on ANTHROPIC_API_KEY (length>0 guard matching horizon-7), uses @ai-sdk/anthropic's anthropic() factory to make one real generateText call WITHOUT passing a per-file fetch: createSdkFetchShim() override, and asserts entries.length === 1 with the expected LlmLogEntry shape after two nested setImmediate flushes \u2014 proving the horizon-9 dual-patch captures SDK-issued fetch traffic end-to-end.",
+      "rationale": "This is the first end-to-end verification that horizon-9's dual-patch (WrappingDispatcher around setGlobalDispatcher + http.ClientRequest.prototype patch) actually engages when the Anthropic SDK issues its default fetch under Jest 29 + Node 22. Discovery flagged a risk that Node's bootstrap lazy-loader may spawn a fresh bundled undici for globalThis.fetch that does not share globalDispatcher state with the user-installed require('undici'); the assertions in this test surface that risk as a clear test fail (getGlobalDispatcher round-trip mismatches, entries.length !== 1) rather than a silently-skipped capture. The dual-patch verification is the bound work for this horizon; the shim from Phase 1 stays unused here on purpose.",
+      "filesAffected": [
+        "packages/llm-http-proxy/src/anthropic.sdk.integration.test.ts (new)"
+      ],
+      "changes": [
+        "Copy horizon-7's raw-HTTPS gate shape verbatim: top-level `const apiKey = process.env.ANTHROPIC_API_KEY` + `const envBaseUrl = process.env.ANTHROPIC_BASE_URL` + `const envModel = process.env.ANTHROPIC_MODEL`; `hasKey = apiKey !== undefined && apiKey.length > 0`; gate as `if (hasKey) describe(...) else describe.skip('anthropic SDK suite (skip: ANTHROPIC_API_KEY unset)', placeholderFn)`.",
+        "Import undici at top of file via try/require into a typed slot (per horizon-9 src/global-fetch-capture.integration.test.ts lines 74-82); capture `originalDispatcher = ud.getGlobalDispatcher()` in beforeEach; restore in afterEach with `expect(ud.getGlobalDispatcher()).toBe(originalDispatcher)` so a dual-patch leak fails the suite.",
+        "Test body: try { const interceptor = new Interceptor({ logger: makePushingLogger(entries) }); interceptor.install(); const anthropic = createAnthropic({ /* no fetch: option \u2014 the dual-patch alone must capture */ }); const result = await generateText({ model: anthropic(modelId), prompt: 'Reply with the single word: ok' }); await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r)); expect(entries.length).toBe(1); expect(entries[0].model).toContain('claude'); expect(entries[0].url).toContain(expectedUrlFragment); expect(entries[0].inputTokens).toBeGreaterThanOrEqual(0); expect(entries[0].outputTokens).toBeGreaterThanOrEqual(0); expect(JSON.stringify(entries[0])).not.toContain(apiKey ?? '__unset__'); } finally { interceptor.restore(); }",
+        "File-header comment block: state that this suite verifies the horizon-9 dual-patch end-to-end on Anthropic SDK-issued traffic, that the shim from Phase 1 is intentionally NOT passed to the provider, and that the Jest 29+Node 22 lazy-loader bypass risk is the load-bearing check.",
+        "Do NOT pass `fetch: createSdkFetchShim()` to the SDK provider anywhere \u2014 this is the no-shim invariant.",
+        "Verify tsc --noEmit passes; verify default `npm test` (env unset) skips the suite with zero network egress; verify with ANTHROPIC_API_KEY set the suite runs one generateText and entries.length === 1."
+      ],
+      "boundedContext": "SDK integration test set (anthropic provider)",
+      "layer": "cross-cutting",
+      "blastRadius": "small",
+      "inputs": [
+        "installed @ai-sdk/anthropic from Phase 0",
+        "Interceptor class from src/interceptor.ts (install/restore/dual-patch surface)",
+        "horizon-7 anthropic.integration.test.ts gate template (hasKey/describe/describe.skip shape, two-setImmediate flush, JSON.stringify no-key safety, try/finally install/restore)",
+        "deliberate non-use note: createSdkFetchShim from Phase 1 is test-only surface and is intentionally NOT imported into this file (the no-shim invariant is the load-bearing check)"
+      ],
+      "expectedResult": "packages/llm-http-proxy/src/anthropic.sdk.integration.test.ts exists; with ANTHROPIC_API_KEY unset, `npm test` skips the suite (zero network egress); with ANTHROPIC_API_KEY set, the suite runs one real generateText and asserts entries.length === 1 with the dual-patch engaged (no per-file fetch shim passed to the provider); tsc --noEmit passes.",
+      "dependsOn": [
+        "install-sdk-devdeps"
+      ],
+      "compensation": "`git rm packages/llm-http-proxy/src/anthropic.sdk.integration.test.ts`. New file with no consumers outside Jest; no external effect.",
+      "rubric": [
+        {
+          "id": "no-shim-invariant",
+          "label": "No-shim invariant (dual-patch must do the capture)",
+          "ruleStatement": "The createAnthropic call must NOT receive a fetch: option of any kind (no createSdkFetchShim, no createNodeHttpsFetch, no fetch: undefined, no conditional fallback that resolves to a shim). 10 = grep confirms zero fetch: occurrences inside the createAnthropic options object and no shim symbol is even imported; 8 = no fetch: option passed to the SDK factory and no shim is referenced at runtime; minScore 8 = the bar for ACCEPTABLE because this dimension guards the load-bearing purpose of the entire phase.",
+          "passCriteria": [
+            "grep -nE \"fetch\\s*:\" packages/llm-http-proxy/src/anthropic.sdk.integration.test.ts returns no match on the line containing createAnthropic(...)",
+            "Reading the createAnthropic call site by eye: the options object literal contains zero keys whose name is 'fetch' (typed or untyped, value supplied or undefined)",
+            "createSdkFetchShim and createNodeHttpsFetch are not imported into this file, OR are imported but never appear on the right-hand side of a 'fetch:' key in this file"
+          ],
+          "failureExamples": [
+            "Developer sees entries.length === 1 fail and adds `fetch: createSdkFetchShim({ logger })` to the SDK call to 'unblock' the capture \u2014 this defeats the entire dual-patch verification and the suite becomes a green no-op for its stated purpose",
+            "Developer writes `fetch: process.env.ANTHROPIC_API_KEY ? undefined : createSdkFetchShim(...)` 'to be safe' \u2014 the shim still flows into the SDK factory whenever the key is set, exactly when the live path runs",
+            "Developer wraps the factory in a helper that defaults to a shim: `const opts = { ...passedOpts, fetch: passedOpts.fetch ?? createSdkFetchShim(...) }` and calls `createAnthropic(opts)` \u2014 shim is silently passed whenever the caller omits fetch"
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "horizon-7-gate-shape-verbatim",
+          "label": "Horizon-7 raw-HTTPS gate shape (hasKey / describe / describe.skip)",
+          "ruleStatement": "The API-key gate must mirror horizon-7's anthropic.integration.test.ts structure verbatim: a top-level const apiKey read of process.env.ANTHROPIC_API_KEY, a hasKey computed as `apiKey !== undefined && apiKey.length > 0`, and an `if (hasKey) describe(...) else describe.skip('<reason>', placeholderFn)` at the top of the file. 10 = structural match including the top-level position and ternary-free if/else; 8 = all three pieces present in the same control-flow shape; minScore 7 = the unset path takes describe.skip and the set path takes describe so the gate is observable in Jest output.",
+          "passCriteria": [
+            "File contains `const apiKey = process.env.ANTHROPIC_API_KEY` (optionally alongside ANTHROPIC_BASE_URL and ANTHROPIC_MODEL companions) at module top-level, not inside a test body",
+            "File contains a hasKey expression of the exact form `apiKey !== undefined && apiKey.length > 0` (truthiness guards like `if (apiKey)` do not satisfy this)",
+            "Top-level `if (hasKey) describe('<live>', liveSuite) else describe.skip('<skip-reason>', placeholderFn)` is present \u2014 the condition gates describe itself, not assertions inside the suite"
+          ],
+          "failureExamples": [
+            "Developer writes `if (process.env.ANTHROPIC_API_KEY) describe(...) else describe.skip(...)` \u2014 truthy guard instead of the verbatim length>0; an env value of '0' or 'false' short-circuits differently than horizon-7",
+            "Developer moves the gate inside a beforeEach of a single describe \u2014 describe is always created and the live path is silently skipped via `it.skip`, which does not match the verbatim gate shape and changes what shows up in Jest output",
+            "Developer writes `describe.skip` unconditionally and removes the if branch entirely \u2014 when CI injects the key the suite still reports skipped, so a real outage of the Anthropic SDK would not be caught"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "dual-patch-restoration-safety",
+          "label": "Dual-patch dispatcher isolation (no cross-suite leak)",
+          "ruleStatement": "Each test must capture the live undici global dispatcher before Interceptor.install() runs and assert equality after restore in afterEach so an un-restored install (a real dual-patch leak) fails the suite instead of poisoning the next *.integration.test.ts. 10 = originalDispatcher captured in beforeEach, afterEach asserts `expect(ud.getGlobalDispatcher()).toBe(originalDispatcher)` AFTER interceptor.restore(), and the test body wraps install/generateText/asserts in try { ... } finally { interceptor.restore(); }; 8 = all three pieces present with cosmetic differences; minScore 7 = interceptor.restore() is reachable on both the success and throw paths of the test body.",
+          "passCriteria": [
+            "File imports undici into a typed slot via try/require (matching the horizon-9 src/global-fetch-capture.integration.test.ts lines 74-82 shape)",
+            "beforeEach captures `originalDispatcher = ud.getGlobalDispatcher()` BEFORE the test body runs install()",
+            "afterEach runs `expect(ud.getGlobalDispatcher()).toBe(originalDispatcher)` AFTER `interceptor.restore()`",
+            "The test body wraps `interceptor.install()` ... `await generateText(...)` ... assertions in `try { ... } finally { interceptor.restore(); }`"
+          ],
+          "failureExamples": [
+            "Developer only puts `interceptor.restore()` in the test body's finally and skips the afterEach assertion \u2014 if the body throws before reaching finally (e.g. a typo in the SDK call), no assertion fires and the next *.integration.test.ts inherits a poisoned global dispatcher",
+            "Developer captures originalDispatcher in module scope but the test pre-installs a different dispatcher (e.g. horizon-9's global-fetch-capture suite ran first) \u2014 restore() restores to the wrong reference and the equality assertion fails on its own suite instead of catching the real leak",
+            "Developer writes `afterEach(() => interceptor.restore())` without ever capturing originalDispatcher \u2014 restore() runs but nothing proves the global returned to the pre-test state, so a partial uninstall (one of the two surfaces left wrapped) passes silently"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "capture-assertion-shape",
+          "label": "End-to-end capture: entries.length === 1 with expected LlmLogEntry shape",
+          "ruleStatement": "After exactly two nested `await new Promise(r => setImmediate(r))` flushes, the suite must assert the dual-patch captured exactly one entry (NOT `toBeGreaterThan(0)`, which would mask the http.ClientRequest.prototype + WrappingDispatcher double-fire risk horizon-9 was built to prevent), with entries[0].model containing 'claude', entries[0].url containing the expected Anthropic API host fragment, and BOTH inputTokens and outputTokens being numbers >= 0. 10 = all six assertions present with literal === 1 and `toBeGreaterThanOrEqual(0)`; 8 = entries.length === 1 PLUS at least three of the remaining five shape checks present; minScore 8 = entries.length === 1 is present because that is the single check that distinguishes a working dual-patch from the bug horizon-9 was designed to avoid.",
+          "passCriteria": [
+            "Exactly two `await new Promise(r => setImmediate(r))` calls are awaited in sequence before the assertions (not one, not three)",
+            "Assertion is `expect(entries.length).toBe(1)` with literal 1, NOT `toBeGreaterThan(0)` / `toBeGreaterThanOrEqual(1)` / `>= 1`",
+            "Assertion that `entries[0].model` contains the substring 'claude' (e.g. `toMatch(/claude/)` or `toContain('claude')`)",
+            "Assertion that `entries[0].url` contains the expected Anthropic API host fragment (e.g. `toContain('api.anthropic.com')`)",
+            "Assertions that `entries[0].inputTokens` and `entries[0].outputTokens` each satisfy `toBeGreaterThanOrEqual(0)`"
+          ],
+          "failureExamples": [
+            "Developer writes `expect(entries.length).toBeGreaterThan(0)` \u2014 silently passes when the dual-patch double-fires (http.ClientRequest.prototype AND WrappingDispatcher both emit), masking the very bug horizon-9 was designed to catch and turning the suite into a green checkmark that proves nothing",
+            "Developer awaits only one `setImmediate` \u2014 the WrappingDispatcher's onComplete resolves in a later microtask, entries.length reads 0, and the suite fails with the wrong symptom (zero capture) instead of the correct one (double capture or shim leak)",
+            "Developer asserts `entries[0].model` is truthy but skips the 'claude' substring check \u2014 a captured entry from a different suite that leaked in (because dual-patch restoration is broken) would still pass"
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "api-key-non-leak",
+          "label": "API-key non-leak via JSON.stringify of the captured entry",
+          "ruleStatement": "The live suite must assert that `JSON.stringify(entries[0])` does not contain the apiKey (or its `'__unset__'` sentinel when unset), guarding against accidental echo of the secret through maskedRequestBody, maskedResponseBody, callerTrace, or url query strings. 10 = explicit `expect(JSON.stringify(entries[0])).not.toContain(apiKey ?? '__unset__')` present inside the hasKey branch; 8 = same check with a slightly different sentinel or coercion; minScore 7 = a negative assertion of the form `expect(...).not.toContain(<key-or-sentinel>)` is present somewhere against the captured entry.",
+          "passCriteria": [
+            "An assertion of the form `expect(JSON.stringify(entries[0])).not.toContain(<apiKey-or-sentinel>)` exists inside the live (hasKey) branch",
+            "The value passed to not.toContain is the same `apiKey` const read from process.env.ANTHROPIC_API_KEY at the top of the file, NOT a hard-coded literal substring of the key",
+            "The assertion runs inside the hasKey path \u2014 it does not silently always pass because the env was unset and the negative check trivially holds against an empty captured entry"
+          ],
+          "failureExamples": [
+            "Developer omits the JSON.stringify check entirely \u2014 a regression that pipes the API key into maskedRequestBody.headers.authorization or maskedResponseBody.error would only be caught by manual review, not by CI",
+            "Developer writes `expect(headers.authorization).not.toContain(apiKey)` \u2014 checks only one surface, misses leakage via maskedResponseBody, maskedRequestBody body, or callerTrace",
+            "Developer hard-codes the prefix of the key into not.toContain (`expect(...).not.toContain('sk-ant-')`) \u2014 when CI rotates the key the assertion reads as always-pass and a real leak slips through"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "skip-without-network-egress",
+          "label": "Default `npm test` skips the suite with zero network egress",
+          "ruleStatement": "When ANTHROPIC_API_KEY is unset (the default CI / local-dev state), the suite must take the describe.skip branch and perform zero network I/O \u2014 no provider instantiation inside a test body, no Interceptor.install(), no outbound fetch. 10 = the placeholderFn passed to describe.skip is empty AND @ai-sdk/anthropic is imported lazily (only inside the hasKey branch) so even module-load side-effects cannot trigger a TLS handshake; 8 = no live network call in the skip path; minScore 7 = describe.skip is the gate branch AND the skip path does not reach generateText or install the interceptor.",
+          "passCriteria": [
+            "The else branch of the gate passes a no-op / placeholder function to describe.skip \u2014 the live suite body is NOT re-used as the skip body",
+            "interceptor.install() is not called anywhere inside the describe.skip branch (verify by reading the placeholderFn body)",
+            "Running `npm test -- --testPathPattern anthropic.sdk.integration` with ANTHROPIC_API_KEY unset produces no outbound HTTPS in the Jest output \u2014 no 'fetch', 'https.request', or DNS-resolution log lines for api.anthropic.com"
+          ],
+          "failureExamples": [
+            "Developer keeps @ai-sdk/anthropic as a top-level `import` at the top of the file and writes a non-empty placeholderFn that still references the SDK factory \u2014 Jest's require-time side-effects open a TLS handshake on some SDK versions even when the suite is gated off",
+            "Developer installs the Interceptor inside beforeEach unconditionally (before the gate) \u2014 when ANTHROPIC_API_KEY is unset, install() still wraps the global dispatcher and pollutes the next *.integration.test.ts even though no generateText ever fires",
+            "Developer writes `describe.skip('skipped')` with no callback function \u2014 Jest's module loader still runs top-level imports for the file, so any eager network call inside the SDK constructor still happens on require"
+          ],
+          "minScore": 7
+        }
+      ],
+      "healerHint": "If you added `fetch: createSdkFetchShim()` to the SDK call to make a failing entries.length === 1 pass, remove it \u2014 the no-shim-invariant is the load-bearing check this phase exists to satisfy; a real zero-entries failure is signal that the bootstrap-loaded undici bypasses setGlobalDispatcher, and that signal is what horizon-9 needs to surface, not a shim workaround."
+    },
+    {
+      "id": "add-openai-sdk-integration-test",
+      "order": 3,
+      "name": "Add OpenAI SDK integration test",
+      "goal": "Add packages/llm-http-proxy/src/openai.sdk.integration.test.ts that gates on OPENAI_API_KEY (length>0 guard matching horizon-7), uses @ai-sdk/openai's openai() factory to make one real generateText call WITHOUT passing a per-file fetch: createSdkFetchShim() override, and asserts entries.length === 1 with the expected LlmLogEntry shape after two nested setImmediate flushes \u2014 proving the horizon-9 dual-patch captures SDK-issued fetch traffic end-to-end on the OpenAI provider.",
+      "rationale": "Same dual-patch end-to-end verification rationale as the Anthropic suite, scoped to OpenAI's SDK provider. The two-setImmediate flush is NESTED (`setImmediate(() => setImmediate(...))`) in horizon-7's raw-HTTPS template, which translates in async form to two sequential `await new Promise(r => setImmediate(r))` calls after the await generateText \u2014 preserving the 'response end fires before the first setImmediate' ordering the dual-patch relies on. The OpenAI default parser path (usage.completion_tokens) is already covered by horizon-7; this suite only needs to assert non-negative token counts and the url/model/url-substring shape.",
+      "filesAffected": [
+        "packages/llm-http-proxy/src/openai.sdk.integration.test.ts (new)"
+      ],
+      "changes": [
+        "Copy horizon-7's raw-HTTPS gate shape verbatim with OPENAI_API_KEY env var: `hasKey = apiKey !== undefined && apiKey.length > 0`; gate as `if (hasKey) describe(...) else describe.skip('openai SDK suite (skip: OPENAI_API_KEY unset)', placeholderFn)`. Read OPENAI_BASE_URL and OPENAI_MODEL env vars for the same env-driven baseurl/model extension pattern.",
+        "Import undici at top via try/require; capture `originalDispatcher = ud.getGlobalDispatcher()` in beforeEach; restore in afterEach with `expect(ud.getGlobalDispatcher()).toBe(originalDispatcher)` per horizon-9 template.",
+        "Test body: try { const interceptor = new Interceptor({ logger: makePushingLogger(entries) }); interceptor.install(); const openai = createOpenAI({ /* no fetch: option */ }); const result = await generateText({ model: openai(modelId), prompt: 'Reply with the single word: ok' }); await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r)); expect(entries.length).toBe(1); expect(entries[0].model).toContain('gpt'); expect(entries[0].url).toContain(expectedUrlFragment); expect(entries[0].inputTokens).toBeGreaterThanOrEqual(0); expect(entries[0].outputTokens).toBeGreaterThanOrEqual(0); expect(JSON.stringify(entries[0])).not.toContain(apiKey ?? '__unset__'); } finally { interceptor.restore(); }",
+        "File-header comment block: state the no-shim invariant, the dual-patch end-to-end verification purpose, and the Jest 29+Node 22 lazy-loader risk.",
+        "Do NOT pass `fetch: createSdkFetchShim()` to the SDK provider.",
+        "Verify tsc --noEmit passes; verify default `npm test` (env unset) skips the suite with zero network egress; verify with OPENAI_API_KEY set the suite runs one generateText and entries.length === 1."
+      ],
+      "boundedContext": "SDK integration test set (openai provider)",
+      "layer": "cross-cutting",
+      "blastRadius": "small",
+      "inputs": [
+        "installed @ai-sdk/openai from Phase 0",
+        "Interceptor class from src/interceptor.ts (install/restore/dual-patch surface)",
+        "horizon-7 openai.integration.test.ts gate template",
+        "deliberate non-use note: createSdkFetchShim from Phase 1 is test-only surface and is intentionally NOT imported into this file (the no-shim invariant is the load-bearing check)"
+      ],
+      "expectedResult": "packages/llm-http-proxy/src/openai.sdk.integration.test.ts exists; with OPENAI_API_KEY unset, `npm test` skips the suite; with OPENAI_API_KEY set, the suite runs one real generateText and asserts entries.length === 1 with the dual-patch engaged; tsc --noEmit passes.",
+      "dependsOn": [
+        "install-sdk-devdeps"
+      ],
+      "compensation": "`git rm packages/llm-http-proxy/src/openai.sdk.integration.test.ts`. New file with no external consumers; clean deletion.",
+      "rubric": [
+        {
+          "id": "gate-shape-verbatim",
+          "label": "Gate uses horizon-7 raw-HTTPS shape verbatim",
+          "ruleStatement": "Score 10: every element of horizon-7's gate (hasKey via length>0, if/else describe/describe.skip with placeholderFn, OPENAI_API_KEY env var read at file top) is reproduced verbatim, with zero structural deviation; minScore 8: same elements present with at most cosmetic whitespace/identifier differences; minScore 7 (acceptable): gate shape is recognizable as horizon-7's but one element (e.g., placeholderFn, the else-branch label) is missing or substituted.",
+          "passCriteria": [
+            "Open packages/llm-http-proxy/src/openai.sdk.integration.test.ts and confirm a line equivalent to `const hasKey = apiKey !== undefined && apiKey.length > 0` appears above the describe block",
+            "Confirm the suite is registered via `if (hasKey) describe(...) else describe.skip('openai SDK suite (skip: OPENAI_API_KEY unset)', placeholderFn)` \u2014 both branches and the placeholderFn argument present",
+            "Confirm the OPENAI_API_KEY env var is read once at the top of the file via process.env.OPENAI_API_KEY (not via dotenv or jest config indirection)",
+            "Confirm `npm test` with OPENAI_API_KEY unset prints the skip placeholder label and makes zero outbound network calls (verified by no real fetch invocation in the Jest log)"
+          ],
+          "failureExamples": [
+            "Developer substitutes `process.env.OPENAI_API_KEY === 'true'` or `Boolean(process.env.OPENAI_API_KEY)` for the length>0 check \u2014 the gate contract from horizon-7 silently shifts and a malformed empty-string key becomes 'set'",
+            "Developer writes `describe.skip(...)` unconditionally with no if/else and no placeholderFn \u2014 the suite never runs end-to-end and the dual-patch verification never happens even when the key is present",
+            "Developer moves the gate inside the test() body instead of wrapping describe \u2014 Jest still discovers the test, `npm test` no longer skips it, and a missing key produces a real network call against OpenAI",
+            "Developer reads the key inside beforeEach on every invocation \u2014 works but the gate-shape contract is broken and any later horizon-7 sync diff will fail to apply cleanly"
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "no-shim-invariant",
+          "label": "SDK provider called WITHOUT per-file fetch shim",
+          "ruleStatement": "Score 10: createOpenAI(...) is invoked with no fetch option at all, AND the file does not import createSdkFetchShim from anywhere, AND a file-header comment block names the no-shim invariant; minScore 8: createOpenAI called without fetch and createSdkFetchShim is not imported, but the no-shim invariant is only documented in code rather than called out in a header comment; minScore 7 (acceptable): a `fetch:` key is present in the options object but explicitly set to `undefined` (still no shim engaged) \u2014 fragile but not broken.",
+          "passCriteria": [
+            "Grep the file for `createSdkFetchShim` \u2014 must return zero matches (no import, no call, no commented reference that could be uncommented later)",
+            "Grep the file for `fetch:` inside the createOpenAI options object \u2014 must return zero matches",
+            "Confirm the createOpenAI call site shows only SDK-neutral options (apiKey, and baseURL if env-driven) and no fetch override of any kind",
+            "Confirm a top-of-file comment block explicitly names the no-shim invariant and the dual-patch end-to-end purpose so a future reader cannot 'helpfully' add the shim"
+          ],
+          "failureExamples": [
+            "Developer copy-pastes from horizon-7's raw-HTTPS test template and leaves a stale `fetch: createNodeHttpsFetch()` or `fetch: createSdkFetchShim()` argument in the options object \u2014 the test still passes against the SDK's own fetch wrapper, which never traverses the dual-patch, defeating the entire phase",
+            "Developer imports createSdkFetchShim for 'defensive coverage' even though unused \u2014 the import alone is a regression risk because a later refactor could pass it as the fetch option without anyone noticing in code review",
+            "Developer conditionally passes the shim behind `if (process.env.USE_SHIM)` \u2014 looks harmless in CI but the moment that env var is set during local debugging, the entries.length === 1 assertion silently passes without proving anything about the dual-patch"
+          ],
+          "minScore": 10
+        },
+        {
+          "id": "end-to-end-capture",
+          "label": "With OPENAI_API_KEY set, entries.length === 1 with expected LlmLogEntry shape",
+          "ruleStatement": "Score 10: with OPENAI_API_KEY set, the suite runs exactly one generateText and produces exactly one entry whose shape matches {timestamp, model, url, inputTokens >= 0, outputTokens >= 0} from src/options.ts; minScore 8: same assertions pass but one shape field (e.g., explicit timestamp presence) is not asserted; minScore 7 (acceptable): entries.length === 1 holds and at least the model/url/non-negative token assertions run, even if some shape fields go unasserted.",
+          "passCriteria": [
+            "Confirm the test contains `await generateText({ model: openai(modelId), prompt: 'Reply with the single word: ok' })` (or equivalent single-call setup) and stores the result",
+            "Confirm exactly these assertions appear after the two-setImmediate flush: `expect(entries.length).toBe(1)`, `expect(entries[0].model).toContain('gpt')`, `expect(entries[0].url).toContain(expectedUrlFragment)`, `expect(entries[0].inputTokens).toBeGreaterThanOrEqual(0)`, `expect(entries[0].outputTokens).toBeGreaterThanOrEqual(0)`",
+            "Confirm OPENAI_BASE_URL and OPENAI_MODEL env vars are read for the baseurl/model extension pattern (expectedUrlFragment derived from the baseURL, not hard-coded)",
+            "Run `OPENAI_API_KEY=... OPENAI_BASE_URL=... OPENAI_MODEL=... npm test -- --testPathPattern openai.sdk.integration` and observe entries.length === 1 in the Jest output"
+          ],
+          "failureExamples": [
+            "Developer asserts only `entries.length >= 0` or `toBeGreaterThan(0)` instead of `toBe(1)` \u2014 a real dual-patch double-fire or a stale entry from a previous suite passes silently",
+            "Developer omits the non-negative token assertions and writes only `expect(entries[0].inputTokens).toBeDefined()` \u2014 a parser regression that returns NaN passes the existence check and corrupts downstream accounting",
+            "Developer hard-codes the model id inside the file (no OPENAI_MODEL env read) \u2014 the horizon-7 baseurl/model extension pattern is broken and a proxy routing change breaks the url assertion with no override hook for local debugging",
+            "Developer wraps the test in `if (hasKey) { ... }` at the test() level instead of using describe \u2014 when the key is unset the test is skipped, but when set, an uncaught error in generateText still skips the finally restore and the dual-patch state leaks"
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "dual-patch-install-restore",
+          "label": "Interceptor install()/restore() round-trips both surfaces",
+          "ruleStatement": "Score 10: undici is lazy-required inside a try/require pattern; originalDispatcher is captured in beforeEach; afterEach asserts ud.getGlobalDispatcher() === originalDispatcher; interceptor.restore() is invoked inside a try/finally so a thrown assertion cannot leave the global dispatcher wrapped; minScore 8: same lifecycle minus one element (e.g., beforeEach/afterEach omitted but restore() still runs in finally); minScore 7 (acceptable): restore() runs but the undici round-trip is not asserted, so a stale dispatcher can silently leak between suites.",
+          "passCriteria": [
+            "Confirm a top-of-file `import * as undici from 'undici'` (or equivalent try/require lazy-load pattern) and a captured `originalDispatcher = undici.getGlobalDispatcher()` inside beforeEach",
+            "Confirm an afterEach (or equivalent teardown) containing `expect(undici.getGlobalDispatcher()).toBe(originalDispatcher)`",
+            "Confirm `interceptor.install()` runs before the generateText call and `interceptor.restore()` runs in a finally block (so an assertion failure still unwinds the patch)",
+            "Confirm `npm test` with OPENAI_API_KEY unset completes without leaving the global dispatcher wrapped (verified by a sibling suite asserting identity of the dispatcher after this one runs)"
+          ],
+          "failureExamples": [
+            "Developer imports undici unconditionally at file top \u2014 when the suite is skipped the import is still evaluated, breaking the optional-peer posture from horizon-9 and crashing on machines without undici installed",
+            "Developer omits the afterEach dispatcher-identity assertion \u2014 a future dual-patch bug that fails to restore leaks between test files and corrupts other suites' global state without any test catching it",
+            "Developer puts `interceptor.restore()` outside the try/finally \u2014 when generateText throws (network blip, model 404), the dispatcher stays wrapped for the rest of the Jest run",
+            "Developer captures originalDispatcher at module load instead of inside beforeEach \u2014 a prior suite that mutated the dispatcher makes the assertion wrong from the very first run of this file"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "secret-not-leaked",
+          "label": "API key never appears in serialized entry or Jest output",
+          "ruleStatement": "Score 10: an explicit `expect(JSON.stringify(entries[0])).not.toContain(apiKey ?? '__unset__')` assertion runs in the test body, AND the logger used does not echo the raw request body to stdout; minScore 8: the JSON.stringify assertion is present and the logger is the standard makePushingLogger (acceptable because the entries buffer is the observable surface); minScore 7 (acceptable): secret safety is achieved only by the maskedRequestBody/maskedResponseBody contract \u2014 JSON.stringify assertion absent, so a regression in masking would not be caught by this suite.",
+          "passCriteria": [
+            "Confirm the test body contains the JSON.stringify no-key safety assertion: `expect(JSON.stringify(entries[0])).not.toContain(apiKey ?? '__unset__')` (or equivalent with the same intent and sentinel)",
+            "Confirm the `__unset__` sentinel appears only inside that assertion and is not used as a real key value anywhere",
+            "Confirm apiKey is captured in a local const BEFORE entering the try block so the finally restore can run without referencing an undefined",
+            "Run with OPENAI_API_KEY=sk-fake-abc123 set and grep test output for `sk-fake-abc123` \u2014 must return zero matches in both stdout and the Jest JSON report"
+          ],
+          "failureExamples": [
+            "Developer removes the JSON.stringify assertion because 'the masker handles it' \u2014 if horizon-9's masker regresses and stops redacting apiKey substrings, the SDK suite is the only one that would have caught it, and it no longer does",
+            "Developer writes `not.toContain(process.env.OPENAI_API_KEY)` directly inside the assertion \u2014 works in the happy path, but if the env var was never set the assertion reads `undefined` which is a no-op and silently passes",
+            "Developer logs the entries array via console.log for debugging and leaves it in \u2014 leaks the key into CI logs the first time the masker misses a header",
+            "Developer writes a custom `placeholderFn` that prints the apiKey into the skip placeholder label \u2014 when CI is missing the key, the secret still ends up in the Jest HTML report"
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "two-setimmediate-flush",
+          "label": "Two sequential setImmediate flushes preserve dual-patch ordering",
+          "ruleStatement": "Score 10: the test body awaits `new Promise(r => setImmediate(r))` exactly twice in sequence, AFTER `await generateText(...)`, BEFORE any entries assertion; minScore 8: two flushes present but inlined in a way that resolves after only one tick (often passes locally but is fragile); minScore 7 (acceptable): only one setImmediate present and the test relies on Jest's microtask flush \u2014 entries.length === 1 becomes flaky in CI.",
+          "passCriteria": [
+            "Confirm the test body contains two distinct `await new Promise(r => setImmediate(r))` lines, sequentially, after the generateText await and before any entries assertion",
+            "Confirm no `setTimeout(..., 0)` or arbitrary `setTimeout(..., N)` substitutes appear \u2014 those are weaker orderings that do not match horizon-7's nested-setImmediate template",
+            "Confirm the two flushes are not collapsed into a single helper that internally only awaits once",
+            "Run the suite ten consecutive times with OPENAI_API_KEY set \u2014 entries.length === 1 must hold in all ten runs (timing stability, not just one green run)"
+          ],
+          "failureExamples": [
+            "Developer writes `await new Promise(setImmediate)` \u2014 this is `setImmediate(resolve)` where resolve is the Promise constructor's resolve, which DOES wait one tick, but the developer assumes it's a typo and 'fixes' it to a single `setTimeout(r, 0)`, losing the second flush entirely",
+            "Developer refactors the two flushes into a `await flushTwice()` helper that internally only awaits once \u2014 passes locally, fails in CI where undici's dispatcher emits on a different microtask boundary",
+            "Developer adds the flushes BEFORE `await generateText(...)` instead of after \u2014 the response hasn't fired yet, so entries is still empty at assert time and the suite fails with entries.length === 0",
+            "Developer writes `await Promise.all([new Promise(r => setImmediate(r)), new Promise(r => setImmediate(r))])` \u2014 these run in PARALLEL, not sequentially, and the dual-patch's two-tick ordering from horizon-7 is not preserved"
+          ],
+          "minScore": 8
+        }
+      ],
+      "healerHint": "If entries.length === 0 with OPENAI_API_KEY set, you almost certainly forgot the second `await new Promise(r => setImmediate(r))` flush (or placed the flushes before `await generateText(...)`) \u2014 add the second sequential flush immediately after the generateText await and re-run."
+    },
+    {
+      "id": "add-gemini-sdk-integration-test-and-baseline",
+      "order": 4,
+      "name": "Add Gemini SDK integration test and capture baseline",
+      "goal": "Add packages/llm-http-proxy/src/gemini.sdk.integration.test.ts that gates on GEMINI_API_KEY with GOOGLE_API_KEY fallback (length>0 guard matching horizon-7), uses @ai-sdk/google's google() factory to make one real generateText call WITHOUT passing a per-file fetch: createSdkFetchShim() override, and asserts entries.length === 1 with non-negative token counts (the default parser does not read usageMetadata camelCase). After the file lands, capture the post-horizon-10 baseline: `npx jest --listTests | wc -l` count, default `npm test` wall-clock (env vars unset, all three SDK suites skip), and all three gates (tsc, lint, build) green.",
+      "rationale": "Closes the third SDK provider's dual-patch verification with the non-negative token count assertion shape (the default parser in src/provider-parser.ts lines 86-102 only inspects usage.completion_tokens and usage.output_tokens, never usageMetadata's camelCase promptTokenCount/candidatesTokenCount/totalTokenCount \u2014 the >= 0 shape matches horizon-7's gemini suite). Folding the baseline capture here keeps the post-horizon-10 numbers anchored to the moment the full SDK test set is in place. Default `npm test` wall-clock should stay within ms-scale skip-overhead of horizon-9's recorded 127 passed / 5 skipped (or 128 passed / 5 skipped with undici present) baseline.",
+      "filesAffected": [
+        "packages/llm-http-proxy/src/gemini.sdk.integration.test.ts (new)"
+      ],
+      "changes": [
+        "Copy horizon-7's raw-HTTPS gate shape verbatim with Gemini fallback: `const apiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY`; `hasKey = apiKey !== undefined && apiKey.length > 0`; gate as `if (hasKey) describe(...) else describe.skip('gemini SDK suite (skip: GEMINI_API_KEY unset)', placeholderFn)`. Read GEMINI_BASE_URL and GEMINI_MODEL env vars.",
+        "Import undici at top via try/require; capture `originalDispatcher = ud.getGlobalDispatcher()` in beforeEach; restore in afterEach with `expect(ud.getGlobalDispatcher()).toBe(originalDispatcher)` per horizon-9 template.",
+        "Test body: try { const interceptor = new Interceptor({ logger: makePushingLogger(entries) }); interceptor.install(); const google = createGoogle({ /* no fetch: option */ }); const result = await generateText({ model: google(modelId), prompt: 'Reply with the single word: ok' }); await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r)); expect(entries.length).toBe(1); expect(entries[0].model).toContain('gemini'); expect(entries[0].url).toContain(expectedUrlFragment); expect(entries[0].inputTokens).toBeGreaterThanOrEqual(0); expect(entries[0].outputTokens).toBeGreaterThanOrEqual(0); expect(JSON.stringify(entries[0])).not.toContain(apiKey ?? '__unset__'); } finally { interceptor.restore(); }",
+        "File-header comment block: state the no-shim invariant, the dual-patch end-to-end verification purpose, the default parser's usageMetadata-not-recognized caveat that drives the >= 0 assertion shape, and the Jest 29+Node 22 lazy-loader risk.",
+        "Do NOT pass `fetch: createSdkFetchShim()` to the SDK provider.",
+        "After file lands, run `npx jest --listTests | wc -l` \u2014 record the post-horizon-10 count (expect pre + 3, i.e. horizon-9 baseline count + 3 new SDK integration test files).",
+        "Run `time npm test` with all API key env vars unset (all three SDK suites skip via describe.skip, zero network egress) \u2014 record wall-clock; must stay within ms-scale skip-overhead of horizon-9 baseline (127 passed / 5 skipped, or 128 / 5 with undici present).",
+        "Run `npm run typecheck && npm run lint && npm run build` \u2014 all three must stay green; record the result as part of the baseline capture inside the phase's done-when check."
+      ],
+      "boundedContext": "SDK integration test set (gemini provider) + post-horizon baseline capture",
+      "layer": "cross-cutting",
+      "blastRadius": "small",
+      "inputs": [
+        "installed @ai-sdk/google from Phase 0",
+        "Interceptor class from src/interceptor.ts (install/restore/dual-patch surface)",
+        "horizon-7 gemini.integration.test.ts gate template (hasKey/describe.skip shape, two-setImmediate flush, header auth x-goog-api-key default)",
+        "default parser limitation at src/provider-parser.ts lines 86-102 (no usageMetadata camelCase recognition \u2014 drives the >= 0 token-count assertion shape)",
+        "deliberate non-use note: createSdkFetchShim from Phase 1 is test-only surface and is intentionally NOT imported into this file (the no-shim invariant is the load-bearing check)"
+      ],
+      "expectedResult": "packages/llm-http-proxy/src/gemini.sdk.integration.test.ts exists; with the Gemini API key env var unset, `npm test` skips the suite; with it set, the suite runs one real generateText and asserts entries.length === 1 with the dual-patch engaged; tsc --noEmit passes; post-horizon-10 baseline recorded (test count = horizon-9 count + 3, default `npm test` wall-clock within ms-scale skip-overhead of the horizon-9 baseline, all three gates green).",
+      "dependsOn": [
+        "install-sdk-devdeps"
+      ],
+      "compensation": "`git rm packages/llm-http-proxy/src/gemini.sdk.integration.test.ts`. New file with no external consumers; baseline numbers are recorded in the status ledger and can be re-captured by re-running the same commands after deletion.",
+      "rubric": [
+        {
+          "id": "horizon-7-gate-shape-verbatim",
+          "label": "Horizon-7 gate shape used verbatim",
+          "ruleStatement": "The file must use the horizon-7 raw-HTTPS gate shape verbatim \u2014 length>0 guard on `GEMINI_API_KEY ?? GOOGLE_API_KEY`, top-level `if (hasKey) describe(...) else describe.skip(...)`, two `setImmediate` flushes, and try/finally install/restore. 10 = structurally identical to horizon-7's gate with every element present and in order; 8 = competent implementation with all five elements functionally equivalent; minScore=7 means the gate must actually skip-vs-run on the env var AND try/finally must restore so a thrown assertion does not leak the swapped dispatcher into later suites.",
+          "passCriteria": [
+            "File path is exactly `packages/llm-http-proxy/src/gemini.sdk.integration.test.ts` (matches the `*.sdk.integration.test.ts` discovery pattern).",
+            "File contains `const apiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;` and a `hasKey` boolean derived from `apiKey !== undefined && apiKey.length > 0` (length>0 guard, not truthiness).",
+            "Top-level structure is `if (hasKey) describe(...) else describe.skip('gemini SDK suite (skip: GEMINI_API_KEY unset)', placeholderFn)` \u2014 the `describe.skip` lives at the top level, not nested inside a `describe` body.",
+            "Between the `await generateText(...)` resolution and the `entries.length === 1` assertion there are exactly two consecutive `await new Promise(r => setImmediate(r))` calls.",
+            "`new Interceptor({...}).install()` is wrapped in a `try { ... } finally { interceptor.restore(); }` block so a failed assertion cannot leave the global undici dispatcher swapped."
+          ],
+          "failureExamples": [
+            "Using `if (apiKey)` truthiness check instead of `hasKey` length>0 \u2014 an empty-string `GEMINI_API_KEY=\"\"` makes the suite attempt the real network call and fail instead of skipping cleanly.",
+            "Placing the skip inside `describe('gemini SDK suite', () => { if (!hasKey) { it.skip(...); return; } ... })` \u2014 Jest still loads and evaluates the file's top-level imports (which may touch undici's global dispatcher) even when the suite is meant to skip.",
+            "Using a single `setImmediate` flush \u2014 on Jest 29 + Node 22 the dual-patch's log emit can settle on the next macrotask, so the entries.length === 1 assertion races and flakes on slow CI.",
+            "Omitting try/finally \u2014 if `generateText` throws (e.g., DNS failure on a sandbox runner), `interceptor.restore()` never runs and the global undici dispatcher stays swapped, poisoning the horizon-9 global-fetch suite that runs after."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "dual-patch-no-per-file-shim",
+          "label": "No per-file fetch shim override passed to the SDK provider",
+          "ruleStatement": "The `createGoogle({...})` call must NOT be passed a per-file `fetch:` override \u2014 the horizon-9 dual-patch (http.ClientRequest.prototype wrap + undici setGlobalDispatcher) must be the sole interception surface for SDK traffic in this file. 10 = grep proves zero shim references in non-comment code AND `createGoogle({...})` has no `fetch:` key; 8 = no shim passed and only an in-comment mention remains; minScore=9 because passing any shim makes the test invalid as a dual-patch verification \u2014 even one runtime reference drops the score below acceptable.",
+          "passCriteria": [
+            "`grep -nE 'createSdkFetchShim|createNodeHttpsFetch' packages/llm-http-proxy/src/gemini.sdk.integration.test.ts` returns no lines outside comment blocks.",
+            "The `createGoogle({...})` options object, inspected at the call site, contains no `fetch:` property.",
+            "The only interception setup in the file is `new Interceptor({...}).install()` (with optional try/require undici for `setGlobalDispatcher` round-tripping) \u2014 no other interception surface is engaged."
+          ],
+          "failureExamples": [
+            "Developer adds `fetch: createSdkFetchShim()` to `createGoogle({...})` because horizon-7's gate used raw HTTPS \u2014 the SDK now routes around the dual-patch entirely, so the test passes even if the horizon-9 dual-patch is broken; the suite verifies nothing about the interception surface it claims to.",
+            "Developer imports `createNodeHttpsFetch` into the gemini test \"for consistency with horizon-7\" \u2014 the import itself signals intent to a reviewer who greps for shims and may be \"fixed\" by a future contributor into a real call.",
+            "Developer passes `fetch: globalThis.fetch` \"to be explicit\" \u2014 same bypass; the dual-patch never sees the request, and `entries.length === 1` will only pass if the SDK silently swallowed an unrelated error."
+          ],
+          "minScore": 9
+        },
+        {
+          "id": "dual-patch-capture-asserted",
+          "label": "Dual-patch capture asserted with correct LlmLogEntry shape",
+          "ruleStatement": "The suite must assert that the dual-patch actually captured the SDK-issued request \u2014 `entries.length === 1` plus the LlmLogEntry fields the default parser populates (model containing `gemini`, url containing the expected Gemini endpoint fragment, non-negative inputTokens/outputTokens). 10 = every relevant field asserted AND token-count uses `>= 0` (never `> 0`) to match the default parser's `usageMetadata`-blind behavior; 8 = `entries.length === 1` plus model/url asserted with `>= 0` tokens; minScore=7 means `entries.length === 1` must be present and at least one LlmLogEntry field beyond that must be asserted.",
+          "passCriteria": [
+            "`expect(entries.length).toBe(1)` is present and uses `toBe`, not `toBeGreaterThan` (catches the dual-patch double-emit regression).",
+            "`expect(entries[0].model).toContain('gemini')` is present (or the equivalent substring of the actual model id).",
+            "`expect(entries[0].url).toContain(<expected Gemini URL fragment>)` is present \u2014 fragment derived from `GEMINI_BASE_URL` or `generativelanguage.googleapis.com`.",
+            "`expect(entries[0].inputTokens).toBeGreaterThanOrEqual(0)` AND `expect(entries[0].outputTokens).toBeGreaterThanOrEqual(0)` are present \u2014 NOT `.toBeGreaterThan(0)`."
+          ],
+          "failureExamples": [
+            "Using `.toBeGreaterThan(0)` for tokens \u2014 the default parser in src/provider-parser.ts lines 86-102 only inspects `usage.completion_tokens` / `usage.output_tokens`, never `usageMetadata.promptTokenCount/candidatesTokenCount/totalTokenCount` (Gemini's camelCase response shape), so when the Gemini response carries only `usageMetadata` the parser returns 0 and the assertion fails spuriously with a real key set.",
+            "Asserting `expect(entries.length).toBeGreaterThan(0)` \u2014 does not detect the one-request-two-emits bug the dual-patch was built to prevent (one entry per interception surface); a double-emit regression would still pass.",
+            "Skipping the `url` assertion \u2014 the dual-patch could be capturing a request to the wrong host (e.g., a stale base URL) and `entries.length === 1` would still pass.",
+            "Asserting only `expect(entries[0]).toBeDefined()` \u2014 passes trivially even if every field is undefined."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "api-key-not-leaked",
+          "label": "API key leak guard present and correct",
+          "ruleStatement": "The suite must guard against the captured API key appearing in any field of the LlmLogEntry via a `JSON.stringify(entries[0])` substring assertion that fails if the key value is present. 10 = guard uses the live env var value (or a guaranteed-impossible sentinel when the gate skipped), runs inside the executed branch only, and is positioned before `interceptor.restore()`; 8 = competent guard using the runtime key value; minScore=8 because a missing or wrong-target guard is a security regression even if the rest of the suite passes.",
+          "passCriteria": [
+            "File contains an assertion of the form `expect(JSON.stringify(entries[0])).not.toContain(<key-source>)` where `<key-source>` is `apiKey` itself (resolved after the length>0 check), not a constant string like `'Bearer'` or the model id.",
+            "The guard runs inside the executed (`if (hasKey)`) branch \u2014 i.e., it is not inside the `describe.skip` block where it would never fire.",
+            "The guard executes after `generateText` resolves and before the `try` block's `finally` restores the interceptor, so a leaked key fails the suite loudly instead of being logged after teardown."
+          ],
+          "failureExamples": [
+            "Omitting the guard entirely \u2014 the SDK may echo the API key in a masked request body or response header, and the suite silently passes with the secret embedded in test logs that get committed to CI artifacts and scraped by log aggregators.",
+            "Asserting `not.toContain('Bearer')` instead of `not.toContain(apiKey)` \u2014 `'Bearer'` is a constant substring that appears in any auth header, so the guard always passes and proves nothing about key leakage.",
+            "Putting the guard inside the `describe.skip` branch \u2014 when the suite actually runs with a real key, the guard is skipped too and provides zero protection.",
+            "Asserting against the model id or URL fragment instead of the key \u2014 fails for the wrong reason (model id never leaks); key still leaks silently into the captured entry."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "post-horizon-baseline-captured",
+          "label": "Post-horizon-10 baseline recorded and verifiable",
+          "ruleStatement": "After the file lands, the post-horizon-10 baseline must be captured in the phase's done-when ledger: `npx jest --listTests | wc -l` count equal to horizon-9 count + 3, default `npm test` wall-clock with all API key env vars unset staying within ms-scale skip-overhead of the horizon-9 baseline (127/5 or 128/5 with undici present), and all three gates (`npm run typecheck`, `npm run lint`, `npm run build`) green. 10 = every number recorded, the +3 delta explicitly stated, wall-clock delta documented, and each gate's green output pasted; 8 = competent capture with all four artifacts present and the +3 delta derivable; minScore=7 means the test-count delta of +3 and the gates-green check must both be present and reproducible by re-running the commands.",
+          "passCriteria": [
+            "Phase's done-when ledger entry records the exact output of `npx jest --listTests | wc -l` after the file lands; a reviewer can re-run the command in the same checkout and reproduce the count.",
+            "Phase's ledger entry records the wall-clock from `time npm test` with `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, and `OPENAI_API_KEY` unset, and the delta vs the horizon-9 baseline (127 passed / 5 skipped, or 128 / 5 with undici present) is documented as ms-scale, not seconds.",
+            "`npm run typecheck`, `npm run lint`, and `npm run build` each show green output (zero errors) in the ledger entry; a reviewer can re-run each command and reproduce the green result.",
+            "The recorded test count equals the horizon-9 baseline count + 3 (the new file plus the two SDK test files from earlier horizons in this batch)."
+          ],
+          "failureExamples": [
+            "Recording only the `npm test` wall-clock but not the `jest --listTests` count \u2014 a future horizon adding more test files becomes undetectable; the baseline anchor is incomplete and the +3 invariant cannot be checked.",
+            "Capturing wall-clock with API key env vars SET \u2014 the suites actually run, wall-clock includes real network egress, and the result is not comparable to the horizon-9 skip-only baseline; the ms-scale skip-overhead invariant is untestable.",
+            "Recording the gates-green result but forgetting to capture `npx jest --listTests | wc -l` BEFORE adding the new file \u2014 the delta-vs-pre cannot be computed and the +3 invariant cannot be proven.",
+            "Claiming gates are green without re-running them \u2014 a later code change (e.g., a type narrowing in src/options.ts) may have made `tsc --noEmit` red; the ledger lies about a green gate."
+          ],
+          "minScore": 7
+        }
+      ],
+      "healerHint": "If the suite passes locally but fails with `GEMINI_API_KEY` set because `entries[0].inputTokens` or `outputTokens` is 0, change `.toBeGreaterThan(0)` to `.toBeGreaterThanOrEqual(0)` \u2014 the default parser in src/provider-parser.ts:86-102 only reads `usage.completion_tokens` / `usage.output_tokens`, never Gemini's `usageMetadata` camelCase fields, so 0 is the correct expected value."
+    }
+  ],
+  "successCriteria": [
+    "Done and correct iff: (a) packages/llm-http-proxy/package.json lists ai + @ai-sdk/anthropic + @ai-sdk/openai + @ai-sdk/google in devDependencies with dependencies and peerDependencies unchanged (zero-hard-deps invariant preserved) and any generated package-lock.json is gitignored; (b) docs/roadmaps/llm-http-proxy/decisions.md has a new dated entry recording option B (per-call fetch shim built on node:https.request) as the chosen SDK transport strategy; (c) packages/llm-http-proxy/src/sdk-fetch-shim.ts exists exporting createSdkFetchShim() (a factory returning a fetch function typed against the SDK providers' fetch option, translating the SDK Request shape to node:https.request and the response body back to a Web Response, not re-exported from src/index.ts); (d) three new *.sdk.integration.test.ts files exist (one per provider: anthropic, openai, gemini), each gated on its per-provider API key env var using the horizon-7 raw-HTTPS gate shape verbatim (hasKey via length>0 check, if/else describe/describe.skip, two-setImmediate flush, JSON.stringify no-key safety, try/finally install/restore), none passing a per-file fetch: createNodeHttpsFetch() shim option to the SDK provider; (e) with each provider's API key env var set, the corresponding SDK suite runs one real generateText through the SDK (without per-file fetch override) and asserts entries.length === 1 with the expected LlmLogEntry shape; (f) default npm test (no env vars) skips every SDK suite with zero network egress; (g) npm run typecheck, npm run lint, npm run build stay green; (h) post-horizon-10 baseline recorded: npx jest --listTests | wc -l count, default npm test wall-clock, all gates green.",
+    "Install Vercel AI SDK devDependencies: packages/llm-http-proxy/package.json lists ai + @ai-sdk/anthropic + @ai-sdk/openai + @ai-sdk/google in devDependencies with dependencies and peerDependencies unchanged; pnpm-lock.yaml at the repo root has the four new entries; tsc --noEmit stays green; any regenerated package-lock.json stays gitignored.",
+    "Add SDK fetch shim and ratify transport decision: packages/llm-http-proxy/src/sdk-fetch-shim.ts exists, exports createSdkFetchShim() with a return type compatible with the @ai-sdk/* provider fetch option, compiles under tsc --noEmit, and is NOT re-exported from src/index.ts; docs/roadmaps/llm-http-proxy/decisions.md has a new `2026-08-30 | horizon 10 | ...` bullet recording option B.",
+    "Add Anthropic SDK integration test: packages/llm-http-proxy/src/anthropic.sdk.integration.test.ts exists; with ANTHROPIC_API_KEY unset, `npm test` skips the suite (zero network egress); with ANTHROPIC_API_KEY set, the suite runs one real generateText and asserts entries.length === 1 with the dual-patch engaged (no per-file fetch shim passed to the provider); tsc --noEmit passes.",
+    "Add OpenAI SDK integration test: packages/llm-http-proxy/src/openai.sdk.integration.test.ts exists; with OPENAI_API_KEY unset, `npm test` skips the suite; with OPENAI_API_KEY set, the suite runs one real generateText and asserts entries.length === 1 with the dual-patch engaged; tsc --noEmit passes.",
+    "Add Gemini SDK integration test and capture baseline: packages/llm-http-proxy/src/gemini.sdk.integration.test.ts exists; with the Gemini API key env var unset, `npm test` skips the suite; with it set, the suite runs one real generateText and asserts entries.length === 1 with the dual-patch engaged; tsc --noEmit passes; post-horizon-10 baseline recorded (test count = horizon-9 count + 3, default `npm test` wall-clock within ms-scale skip-overhead of the horizon-9 baseline, all three gates green)."
+  ],
+  "deferred": [
+    "real npm publish \u2014 publish bar is consistently deferred across horizons 7, 8, and 9 and the user redirected horizon 10 away from it; npm publish --dry-run was proven green in horizon 6.",
+    "semver-freeze call / VERSION bump from 0.2.0 to 0.3.0 \u2014 publish-side work; horizon-10 changes are test-only surface (sdk-fetch-shim is NOT re-exported from src/index.ts) so the public API stays 0.2.0 with no version bump.",
+    "ESM dist lazy-require inertness proof under a real ESM consumer \u2014 publish-side work; horizon-6's InMemorySpanExporter demo + horizon-9's lazy-require for undici is the closed form for the inertness proof.",
+    "prepack / prepare / prepublishOnly auto-build scripts \u2014 publish-side work; package.json currently has no such scripts and dist/ stays gitignored.",
+    "repository / homepage / bugs / publishConfig fields in package.json \u2014 publish-side metadata; not required for SDK test execution or dual-patch verification.",
+    "consumer-facing OTEL README docs \u2014 publish-side work; horizon-6 closed the InMemorySpanExporter round-trip and horizon-10 does not change the OTEL surface.",
+    "additional provider SDK tests beyond anthropic / openai / gemini (Mistral, Cohere, DeepSeek, Bedrock, etc.) \u2014 YAGNI gate 1 (not asked for); the three named providers are the documented provider-parser surface and the horizon-7 baseline.",
+    "streaming-mode / auth-error-path / rate-limit-backoff deepening for SDK calls \u2014 YAGNI / out-of-scope for a dual-patch verification horizon; each suite runs exactly one generateText per provider.",
+    "jest testPathIgnorePatterns migration for SDK tests \u2014 rejected per horizon-7 fetch-baseline-contract-shift discovery; testRegex already picks up *.sdk.integration.test.ts without config changes.",
+    "clean re-run of the horizon-5 p99 latency bar \u2014 SDK integration tests are not the latency bar; horizon-5 p99 FAIL stays closed as a recorded environmental miss per blocker 2026-08-30 horizon 7.",
+    "removing or further restricting the horizon-9 undici peer (e.g. narrowing ^6.0.0 || ^7.0.0 to ^6.x only, or dropping the peer entirely) \u2014 horizon-9's dual-patch is the load-bearing capture surface for SDK-issued fetch traffic in this horizon; tightening or removing the peer mid-verification would invalidate the verification itself.",
+    "Horizon-09 status.json rename to ...-roadmap.status.json: already executed by the orchestrator as Step 0 housekeeping at the start of this run; not a phase, no planning artifact (excluded from any phase's filesAffected per the discovery guidance).",
+    "User-mandated inclusion of createSdkFetchShim as test-only surface (Phase 1) despite zero current consumers in the SDK tests: the SDK tests rely on the dual-patch alone; the shim is shipped because the user's Step-0 option (A) explicitly listed it among the deliverables (the user-mandated zero-consumer shim is honored, not flagged as a YAGNI gate failure)."
+  ],
+  "revision": 1,
+  "revisionReason": "Healed: removed non-load-bearing dependsOn edges and createSdkFetchShim inputs from phases 2/3/4 (valid-dependencies major issue)"
+}
