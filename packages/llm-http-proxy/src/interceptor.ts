@@ -1,22 +1,41 @@
 /**
  * llm-http-proxy interceptor core.
  *
- * Captures in-process LLM provider HTTP/HTTPS traffic by patching
- * `http.ClientRequest.prototype.write/end` once process-wide (singleton
- * guarded). Patching the prototype — rather than the `http.request` /
- * `https.request` exports — is the only interception point that works in
- * both real Node (where those exports are writable data properties) and
- * under a frozen module registry like Jest's (where they are non-writable
- * accessors); Node's own `request` constructs a `ClientRequest` and every
- * write/end flows through the prototype.
+ * Captures in-process LLM provider HTTP/HTTPS traffic by patching TWO
+ * surfaces once process-wide (singleton guarded):
+ *
+ *   1. `http.ClientRequest.prototype.write/end` — covers `http.request`
+ *      and `https.request`. Patching the prototype — rather than the
+ *      `http.request` / `https.request` exports — is the only interception
+ *      point that works in both real Node (where those exports are
+ *      writable data properties) and under a frozen module registry like
+ *      Jest's (where they are non-writable accessors); Node's own
+ *      `request` constructs a `ClientRequest` and every write/end flows
+ *      through the prototype.
+ *
+ *   2. undici's global dispatcher via `setGlobalDispatcher` — covers
+ *      `globalThis.fetch` (Node 18+ fetch is undici-backed). The wrapping
+ *      dispatcher builds a synthetic `ClientRequest`-shaped view from
+ *      `DispatchOptions` and routes every request through the same
+ *      `emitLogEntry` builder used by the http-patch path. The `undici`
+ *      package is an optional peer dep; when absent, install() silently
+ *      skips this surface.
  *
  * Latency discipline: the original write/end forward through synchronously
  * first; payload capture and emission are deferred to response listeners /
- * a setImmediate callback, never on the synchronous request path.
+ * a setImmediate callback, never on the synchronous request path. The
+ * undici wrapping dispatcher's handler does the same — synthetic events
+ * are emitted into the captured listener graph and `emitLogEntry` runs
+ * inside a setImmediate.
  */
 
+import { EventEmitter } from 'node:events';
 import { ClientRequest, IncomingMessage } from 'node:http';
 import * as http from 'node:http';
+import type { Dispatcher } from 'undici-types';
+
+type UndiciDispatchOptions = Dispatcher.DispatchOptions;
+type UndiciDispatchHandlers = Dispatcher.DispatchHandlers;
 import {
   createEventStreamParser,
   type StreamingResult,
@@ -43,6 +62,29 @@ const DEFAULT_PROVIDERS: string[] = [
   'api.cohere.ai',
   'api.mistral.ai',
 ];
+
+// Optional peer dep: undici (^6.0.0 || ^7.0.0). When the peer is installed
+// (npm install undici), this resolves to a module exposing
+// setGlobalDispatcher / getGlobalDispatcher / Dispatcher — the surface the
+// dual-patch in install()/restore() uses to capture global fetch traffic.
+// When the peer is absent, this stays undefined and install() silently
+// skips the undici side (preserving zero-hard-deps public surface).
+// Same lazy-require pattern as src/otel.ts lines 29-44. The undici-types
+// module shim at src/types-undici.d.ts makes `typeof import('undici')`
+// resolve to undici-types' shape at type-check time even when the undici
+// package is not installed.
+type UndiciApi = typeof import('undici');
+
+let undici: UndiciApi | undefined;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  undici = require('undici') as UndiciApi;
+} catch {
+  // Peers not installed — leave `undici` undefined so install()/restore()
+  // silently skip the undici side.
+
+  undici = undefined;
+}
 
 export {
   defaultEstimateInputTokens,
@@ -88,6 +130,429 @@ const kNoCapture = Symbol('llm-http-proxy.noCapture');
 const kWriteWrapper = Symbol('llm-http-proxy.writeWrapper');
 const kEndWrapper = Symbol('llm-http-proxy.endWrapper');
 const kOnWrapper = Symbol('llm-http-proxy.onWrapper');
+// Install guard tagged on the WrappingDispatcher instance itself: lets
+// install() detect that the global dispatcher is already our wrapper and
+// skip re-wrapping, and lets restore() assert reference identity before
+// reinstating the captured original.
+const kDispatcherWrapper = Symbol('llm-http-proxy.dispatcherWrapper');
+
+/** Shape returned by `undici.getGlobalDispatcher()`. Same class hierarchy
+ *  that `typeof import('undici').Dispatcher` resolves to through the
+ *  `src/types-undici.d.ts` shim when the `undici` peer is installed. */
+type UndiciDispatcher = Dispatcher;
+
+/** Normalize undici DispatchOptions.headers (string | string[] | Iterable
+ *  tuples | IncomingHttpHeaders) to a flat lowercase-keyed map so the
+ *  synthetic ClientRequest's getHeader() can answer `host` and friends. */
+function normaliseUndiciHeaders(
+  raw: UndiciDispatchOptions['headers'],
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (raw === undefined || raw === null) {
+    return out;
+  }
+  if (
+    typeof raw === 'object' &&
+    !Array.isArray(raw) &&
+    !(Symbol.iterator in raw)
+  ) {
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof v === 'string') {
+        out[k.toLowerCase()] = v;
+      } else if (Array.isArray(v) && typeof v[0] === 'string') {
+        out[k.toLowerCase()] = v[0];
+      }
+    }
+    return out;
+  }
+  const iterable = raw as Iterable<[string, string | string[]]>;
+  for (const pair of iterable) {
+    const name = String(pair[0]).toLowerCase();
+    const value = pair[1];
+    if (typeof value === 'string') {
+      out[name] = value;
+    } else if (Array.isArray(value) && typeof value[0] === 'string') {
+      out[name] = value[0];
+    }
+  }
+  return out;
+}
+
+/** Normalize the raw headers Buffer[] that undici hands to onHeaders()
+ *  (one Buffer per header line, `name: value` form) into a lowercase-keyed
+ *  string map. */
+function normaliseRawHeaderBuffers(
+  raw: ReadonlyArray<Buffer> | null,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (raw === null) {
+    return out;
+  }
+  for (const buf of raw) {
+    const line = buf.toString('utf8');
+    const colon = line.indexOf(':');
+    if (colon === -1) {
+      continue;
+    }
+    const name = line.slice(0, colon).trim().toLowerCase();
+    const value = line.slice(colon + 1).trim();
+    out[name] = value;
+  }
+  return out;
+}
+
+/**
+ * Wrapping undici Dispatcher that re-routes every dispatched request
+ * through the existing `emitLogEntry` builder by constructing a synthetic
+ * `http.ClientRequest`-shaped view from the plain `DispatchOptions` object.
+ *
+ * The synthetic view satisfies every field the existing code reads from a
+ * real `ClientRequest` (hostname, port, path, protocol, getHeader) via the
+ * duck-typed `as unknown as` view-cast discipline already used elsewhere in
+ * this file. All real I/O stays on `original.dispatch()` — this wrapper
+ * only observes.
+ *
+ * Latency discipline (same as the http-patch path): the wrapped handler
+ * defers `emitLogEntry` to a `setImmediate`, never on the synchronous
+ * dispatch path. The handler invokes the wrapped handler's callbacks
+ * first, then routes data/end/error events into the synthetic request's
+ * listener graph that `attachCapture` already installed.
+ */
+class WrappingDispatcher extends EventEmitter {
+  readonly [kDispatcherWrapper] = true;
+
+  constructor(
+    private readonly original: UndiciDispatcher,
+    private readonly interceptor: Interceptor,
+  ) {
+    super();
+  }
+
+  dispatch(
+    options: UndiciDispatchOptions,
+    handler: UndiciDispatchHandlers,
+  ): boolean {
+    // The synthetic ClientRequest-shaped view. The fields below are the
+    // exact subset read by emitLogEntry / deriveUrl / resolveScheme /
+    // reqHostname (all view-cast into http.ClientRequest via Tagged).
+    const originStr =
+      options.origin instanceof URL
+        ? options.origin.toString()
+        : (options.origin ?? 'http://localhost');
+    const originUrl = new URL(originStr);
+    const headerMap = normaliseUndiciHeaders(options.headers);
+    const hostHeader = headerMap.host ?? originUrl.host;
+    const headersLower = new Map<string, string>(Object.entries(headerMap));
+    const syntheticReq = new EventEmitter();
+    Object.assign(syntheticReq, {
+      hostname: originUrl.hostname,
+      port:
+        originUrl.port !== ''
+          ? Number(originUrl.port)
+          : originUrl.protocol === 'https:'
+            ? 443
+            : 80,
+      path: options.path || '/',
+      protocol: originUrl.protocol,
+      method: options.method,
+      getHeader(name: string): string | undefined {
+        return headersLower.get(name.toLowerCase()) ?? hostHeader;
+      },
+    });
+
+    // Capture bookkeeping. attachCapture installs req.on('response', ...)
+    // and req.on('error', ...) listeners — both route through synthetic
+    // events fired by the wrapped handler below.
+    const callerTrace = captureCallerTrace();
+    this.interceptor.attachCapture(
+      syntheticReq as unknown as ClientRequest,
+      callerTrace,
+    );
+
+    // Capture the request body. undici hands plain string / Buffer /
+    // Uint8Array bodies through verbatim, and wraps any other fetch body
+    // shape (string, BufferSource, FormData, ReadableStream) in an
+    // AsyncIterable. The fully-buffered bodies capture synchronously
+    // before dispatch(); the AsyncIterable case requires a tee — undici's
+    // writer consumes the source iterator to write to the socket
+    // (preserving content-length integrity), and we cannot double-
+    // consume the upstream without losing body bytes and tripping
+    // UND_ERR_REQ_CONTENT_LENGTH_MISMATCH. A shared buffer is filled
+    // by an upstream drainer; both undici's writer (via a re-yielding
+    // iterator) and our capture branch read from it. For typical small
+    // fetch payloads the entire JSON arrives in one chunk before the
+    // HTTP lifecycle's onComplete fires, so emitLogEntry sees the body
+    // when it runs on the setImmediate scheduled by completeCapture.
+    const state = (syntheticReq as unknown as Tagged)[kCapture] as
+      CaptureState | undefined;
+    if (
+      state !== undefined &&
+      options.body !== undefined &&
+      options.body !== null
+    ) {
+      const body = options.body;
+      if (typeof body === 'string') {
+        state.requestBodyChunks.push(Buffer.from(body, 'utf8'));
+        state.capturedEnd = true;
+        state.finished = true;
+      } else if (Buffer.isBuffer(body) || body instanceof Uint8Array) {
+        state.requestBodyChunks.push(Buffer.from(body as Uint8Array));
+        state.capturedEnd = true;
+        state.finished = true;
+      } else if (typeof body === 'object' && Symbol.asyncIterator in body) {
+        // Tee the AsyncIterable so undici's writer and our capture both
+        // see every chunk without double-consuming the upstream. A single
+        // buffer is filled by the upstream drainer; both consumers wait
+        // on a shared waiter queue for chunks (or end-of-stream).
+        const src = body as AsyncIterable<unknown>;
+        const sharedChunks: Buffer[] = [];
+        let upstreamDone = false;
+        let upstreamError: unknown = null;
+        const waiters: Array<() => void> = [];
+        const signalWaiters = (): void => {
+          while (waiters.length > 0) {
+            const w = waiters.shift();
+            if (w !== undefined) {
+              w();
+            }
+          }
+        };
+
+        // Upstream drainer: fills sharedChunks, signals waiters.
+        void (async () => {
+          try {
+            for await (const chunk of src) {
+              if (typeof chunk === 'string') {
+                sharedChunks.push(Buffer.from(chunk, 'utf8'));
+              } else if (
+                Buffer.isBuffer(chunk) ||
+                chunk instanceof Uint8Array
+              ) {
+                sharedChunks.push(Buffer.from(chunk as Uint8Array));
+              }
+              signalWaiters();
+            }
+          } catch (err) {
+            upstreamError = err;
+          } finally {
+            upstreamDone = true;
+            signalWaiters();
+          }
+        })();
+
+        // Tee'd iterator for undici: yields each shared chunk exactly once.
+        // Cast at the assignment boundary because the discriminated
+        // AsyncIterable<any> shape from undici-types wants a top-level
+        // AsyncIterator<any,any,any>; our re-yielding generator object
+        // matches at runtime (next() is async; Symbol.asyncIterator is
+        // present on the OUTER generator) but TS only sees the inner
+        // `{ async next() }` shape because the outer literal was widened.
+        options.body = {
+          [Symbol.asyncIterator]() {
+            let idx = 0;
+            return {
+              async next(): Promise<IteratorResult<Uint8Array>> {
+                while (
+                  idx >= sharedChunks.length &&
+                  !upstreamDone &&
+                  !upstreamError
+                ) {
+                  await new Promise<void>((resolve) => {
+                    waiters.push(resolve);
+                  });
+                }
+                if (upstreamError) {
+                  // eslint-disable-next-line @typescript-eslint/only-throw-error
+                  throw upstreamError;
+                }
+                if (idx >= sharedChunks.length && upstreamDone) {
+                  return { done: true, value: undefined };
+                }
+                const value = sharedChunks[idx++];
+                if (value === undefined) {
+                  return { done: true, value: undefined };
+                }
+                return { done: false, value: value };
+              },
+              [Symbol.asyncIterator]() {
+                return this;
+              },
+            };
+          },
+        } as unknown as UndiciDispatchOptions['body'];
+
+        // Capture: wait for upstream to drain, then push the full buffer.
+        void (async () => {
+          while (!upstreamDone && !upstreamError) {
+            await new Promise<void>((resolve) => {
+              waiters.push(resolve);
+            });
+          }
+          if (sharedChunks.length > 0) {
+            state.requestBodyChunks.push(...sharedChunks);
+          }
+          state.capturedEnd = true;
+          state.finished = true;
+        })();
+      }
+    }
+
+    // The wrapped handler routes undici lifecycle callbacks into synthetic
+    // events on `syntheticReq` (error) or `syntheticRes` (data/end). The
+    // real listener graph is installed by attachCapture when 'response'
+    // fires, so onHeaders is the right place to mint syntheticRes.
+    let syntheticRes: EventEmitter | undefined;
+    const wrappedHandler: UndiciDispatchHandlers = {
+      onConnect: (abort) => {
+        handler.onConnect?.(abort);
+      },
+      onError: (err) => {
+        handler.onError?.(err);
+        syntheticReq.emit('error', err);
+      },
+      onUpgrade: (statusCode, headers, socket) => {
+        handler.onUpgrade?.(statusCode, headers, socket);
+      },
+      onResponseStarted: () => {
+        handler.onResponseStarted?.();
+      },
+      onHeaders: (statusCode, headers, resume, statusText) => {
+        const resHeaders = normaliseRawHeaderBuffers(headers);
+        syntheticRes = new EventEmitter();
+        Object.assign(syntheticRes, {
+          statusCode,
+          statusMessage: statusText,
+          headers: resHeaders,
+          aborted: false,
+          complete: false,
+        });
+        // attachCapture listens for 'response' and installs data/end/error/
+        // aborted/close listeners on the IncomingMessage-shaped object.
+        syntheticReq.emit('response', syntheticRes);
+        return (
+          handler.onHeaders?.(statusCode, headers, resume, statusText) ?? true
+        );
+      },
+      onData: (chunk) => {
+        syntheticRes?.emit('data', chunk);
+        return handler.onData?.(chunk) ?? true;
+      },
+      onComplete: (trailers) => {
+        if (syntheticRes !== undefined) {
+          syntheticRes.emit('end');
+        }
+        handler.onComplete?.(trailers);
+      },
+      onBodySent: (chunkSize, totalBytesSent) => {
+        handler.onBodySent?.(chunkSize, totalBytesSent);
+      },
+    };
+
+    return this.original.dispatch(options, wrappedHandler);
+  }
+
+  // ---------------------------------------------------------------
+  // Pass-throughs for the rest of the Dispatcher surface. global
+  // fetch exercises only dispatch(); the others exist to satisfy the
+  // Dispatcher interface and to forward explicit lifecycle calls.
+  // ---------------------------------------------------------------
+
+  close(): Promise<void>;
+  close(callback: () => void): void;
+  close(...args: unknown[]): Promise<void> | void {
+    return (this.original.close as (...a: unknown[]) => Promise<void> | void)(
+      ...args,
+    );
+  }
+
+  destroy(): Promise<void>;
+  destroy(err: Error | null): Promise<void>;
+  destroy(callback: () => void): void;
+  destroy(err: Error | null, callback: () => void): void;
+  destroy(...args: unknown[]): Promise<void> | void {
+    return (this.original.destroy as (...a: unknown[]) => Promise<void> | void)(
+      ...args,
+    );
+  }
+
+  connect(options: Dispatcher.ConnectOptions): Promise<Dispatcher.ConnectData>;
+  connect(
+    options: Dispatcher.ConnectOptions,
+    callback: (err: Error | null, data: Dispatcher.ConnectData) => void,
+  ): void;
+  connect(...args: unknown[]): Promise<Dispatcher.ConnectData> | void {
+    return (
+      this.original.connect as (
+        ...a: unknown[]
+      ) => Promise<Dispatcher.ConnectData> | void
+    )(...args);
+  }
+
+  compose(
+    dispatchers: Dispatcher.DispatcherComposeInterceptor[],
+  ): Dispatcher.ComposedDispatcher;
+  compose(
+    ...dispatchers: Dispatcher.DispatcherComposeInterceptor[]
+  ): Dispatcher.ComposedDispatcher;
+  compose(...args: unknown[]): Dispatcher.ComposedDispatcher {
+    return (
+      this.original.compose as (
+        ...a: unknown[]
+      ) => Dispatcher.ComposedDispatcher
+    )(...args);
+  }
+
+  request(options: Dispatcher.RequestOptions): Promise<Dispatcher.ResponseData>;
+  request(
+    options: Dispatcher.RequestOptions,
+    callback: (err: Error | null, data: Dispatcher.ResponseData) => void,
+  ): void;
+  request(...args: unknown[]): Promise<Dispatcher.ResponseData> | void {
+    return (
+      this.original.request as (
+        ...a: unknown[]
+      ) => Promise<Dispatcher.ResponseData> | void
+    )(...args);
+  }
+
+  pipeline(
+    options: Dispatcher.PipelineOptions,
+    handler: Dispatcher.PipelineHandler,
+  ): Dispatcher extends never ? never : ReturnType<Dispatcher['pipeline']>;
+  pipeline(...args: unknown[]): unknown {
+    return (this.original.pipeline as (...a: unknown[]) => unknown)(...args);
+  }
+
+  stream(
+    options: Dispatcher.RequestOptions,
+    factory: Dispatcher.StreamFactory,
+  ): Promise<Dispatcher.StreamData>;
+  stream(
+    options: Dispatcher.RequestOptions,
+    factory: Dispatcher.StreamFactory,
+    callback: (err: Error | null, data: Dispatcher.StreamData) => void,
+  ): void;
+  stream(...args: unknown[]): Promise<Dispatcher.StreamData> | void {
+    return (
+      this.original.stream as (
+        ...a: unknown[]
+      ) => Promise<Dispatcher.StreamData> | void
+    )(...args);
+  }
+
+  upgrade(options: Dispatcher.UpgradeOptions): Promise<Dispatcher.UpgradeData>;
+  upgrade(
+    options: Dispatcher.UpgradeOptions,
+    callback: (err: Error | null, data: Dispatcher.UpgradeData) => void,
+  ): void;
+  upgrade(...args: unknown[]): Promise<Dispatcher.UpgradeData> | void {
+    return (
+      this.original.upgrade as (
+        ...a: unknown[]
+      ) => Promise<Dispatcher.UpgradeData> | void
+    )(...args);
+  }
+}
 
 type Tagged = Record<symbol, unknown>;
 
@@ -185,9 +650,9 @@ function applyRequestTransform(
  *
  * ```
  * const interceptor = new Interceptor(options);
- * interceptor.install();   // patch ClientRequest.prototype (no-op if already installed)
+ * interceptor.install();   // patch http.ClientRequest.prototype AND undici global dispatcher (no-op if already installed)
  * // ... app runs ...
- * interceptor.restore();   // reinstate originals (idempotent)
+ * interceptor.restore();   // reinstate originals by reference identity (idempotent)
  * ```
  */
 export class Interceptor {
@@ -201,6 +666,19 @@ export class Interceptor {
   private readonly responseTransform: ResponseTransformer | undefined;
 
   private installed = false;
+
+  /** Wrapping undici Dispatcher installed via `setGlobalDispatcher`. Set
+   *  when the `undici` peer is installed AND install() ran; undefined
+   *  when the peer is absent or install()/restore() cleared it. Typed as
+   *  the interface (not the class) so the boundary into
+   *  setGlobalDispatcher/getGlobalDispatcher is seamless; the wrapper
+   *  carries the kDispatcherWrapper Symbol tag for runtime identity
+   *  checks. */
+  private dispatcherWrapper: UndiciDispatcher | undefined;
+  /** The undici Dispatcher captured at install() time, reinstated by
+   *  restore() via reference identity (===). Undefined when no undici
+   *  patch is in effect. */
+  private dispatcherOriginal: UndiciDispatcher | undefined;
 
   constructor(options: InterceptorOptions = {}) {
     this.providers = options.providers || DEFAULT_PROVIDERS;
@@ -217,24 +695,97 @@ export class Interceptor {
     return this.installed;
   }
 
-  /** Patch ClientRequest.prototype.write/end. No-op when the patch is ours. */
+  /**
+   * Patch both Node's `http.ClientRequest.prototype` (write/end/on) AND
+   * undici's global dispatcher (via `setGlobalDispatcher`) so LLM traffic
+   * arriving on either surface — `http.request`, `https.request`, or
+   * `globalThis.fetch` (which is undici-backed in Node 18+) — flows through
+   * the same `emitLogEntry` builder. https.ClientRequest IS
+   * http.ClientRequest in Node; patching the prototype once covers both.
+   *
+   * Idempotent: a second `install()` on the same instance is a no-op
+   * (`this.installed` guard). The undici side additionally checks the
+   * `kDispatcherWrapper` tag on the current global dispatcher so a
+   * double-install cannot stack a second wrapper.
+   *
+   * When the optional `undici` peer dep is absent at runtime, install()
+   * still patches the http surface and silently skips the undici side.
+   */
   install(): void {
     if (this.installed) {
       return;
     }
     this.patchPrototype(http.ClientRequest);
-    // https.ClientRequest IS http.ClientRequest in Node; https only swaps
-    // the transport. Patching once covers both.
+    this.installUndiciDispatcher();
     this.installed = true;
   }
 
-  /** Reinstate the pristine write/end. Idempotent. */
+  /**
+   * Reinstate the pristine `http.ClientRequest.prototype` AND the original
+   * undici global dispatcher (by reference identity). Idempotent: a
+   * second `restore()` with no intervening `install()` is a no-op
+   * (`this.installed` guard). When the undici peer is absent or the
+   * wrapper is not currently the global dispatcher, restore() still
+   * cleans up its stored references without throwing.
+   */
   restore(): void {
     if (!this.installed) {
       return;
     }
     this.unpatchPrototype(http.ClientRequest);
+    this.restoreUndiciDispatcher();
     this.installed = false;
+  }
+
+  /**
+   * Install the wrapping undici Dispatcher as the process-global one.
+   * Silent no-op when the `undici` peer dep is absent (zero-hard-deps
+   * invariant: the lazy-require in module-top catches MODULE_NOT_FOUND
+   * and leaves `undici` undefined).
+   */
+  private installUndiciDispatcher(): void {
+    if (undici === undefined) {
+      return;
+    }
+    // Idempotency via the kDispatcherWrapper tag: if the current global
+    // dispatcher is already the wrapper we previously installed, skip.
+    if (undici.getGlobalDispatcher() === this.dispatcherWrapper) {
+      return;
+    }
+    const original = undici.getGlobalDispatcher();
+    // Cast: at runtime WrappingDispatcher is a valid Dispatcher (extends
+    // EventEmitter, has dispatch(), forwards the rest); TS cannot verify
+    // this because EventEmitter's listeners() return type (Function[]) is
+    // broader than Dispatcher's narrowed overload. undici's actual runtime
+    // exercise of a global dispatcher uses only dispatch() and the
+    // connect/disconnect emit events — both present and correctly typed.
+    const wrapper = new WrappingDispatcher(
+      original,
+      this,
+    ) as unknown as UndiciDispatcher;
+    this.dispatcherOriginal = original;
+    this.dispatcherWrapper = wrapper;
+    undici.setGlobalDispatcher(wrapper);
+  }
+
+  /**
+   * Reinstate the captured original undici Dispatcher. Reference-identity
+   * guard: only reinstate when the current global dispatcher is still
+   * our wrapper (some external code may have swapped the global between
+   * install() and restore() — in that case we leave the external swap
+   * intact and clear our stored refs).
+   */
+  private restoreUndiciDispatcher(): void {
+    if (
+      undici !== undefined &&
+      this.dispatcherWrapper !== undefined &&
+      this.dispatcherOriginal !== undefined &&
+      undici.getGlobalDispatcher() === this.dispatcherWrapper
+    ) {
+      undici.setGlobalDispatcher(this.dispatcherOriginal);
+    }
+    this.dispatcherWrapper = undefined;
+    this.dispatcherOriginal = undefined;
   }
 
   // ---------------------------------------------------------------------
@@ -931,12 +1482,15 @@ export function deriveUrl(
     path?: string;
     socket?: { localPort?: number };
   };
-  // The host header (if present) carries host[:port] authoritatively.
+  // The host header (if present) carries host[:port] authoritatively —
+  // prefer it over `view.hostname` so a port-bearing header always wins
+  // over a hostname-only view (the undici-patch synthetic ClientRequest
+  // exposes both, and dropping the port when the header has one is wrong).
   const hostHeader =
     typeof req.getHeader === 'function'
       ? req.getHeader('host')?.toString()
       : undefined;
-  const hostWithPort = (view.hostname ?? hostHeader ?? 'localhost').replace(
+  const hostWithPort = (hostHeader ?? view.hostname ?? 'localhost').replace(
     /^\[|\]$/g,
     '',
   ); // strip IPv6 brackets for hostname comparisons
