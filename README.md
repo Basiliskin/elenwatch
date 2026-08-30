@@ -1,98 +1,105 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# elenwatch
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+A NestJS 11 host application plus a locally-linked npm package,
+[`llm-http-proxy`](./packages/llm-http-proxy/), that demonstrates how to wire the
+package into a Nest app lifecycle.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+The host application in `src/` is intentionally minimal — a single `GET /`
+endpoint returning `Hello World!` — and its only job is to install the
+`llm-http-proxy` interceptor on `OnApplicationBootstrap` and restore it on
+`OnApplicationShutdown`. The package itself is the product.
 
-## Description
+## Layout
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
-
-```bash
-$ pnpm install
+```
+elenwatch/
+├── src/                              # NestJS host application
+│   ├── main.ts                       # bootstrap (PORT ?? 3000)
+│   ├── app.module.ts                 # installs / restores the interceptor
+│   ├── app.controller.ts             # GET / -> "Hello World!"
+│   ├── app.service.ts
+│   └── *.spec.ts                     # Jest unit specs
+├── test/                             # Jest e2e specs
+└── packages/
+    └── llm-http-proxy/               # the npm package (MIT, v0.2.0)
+        ├── README.md                 # package-level docs
+        ├── package.json
+        ├── LICENSE
+        └── src/                      # Interceptor, options, parser, redaction,
+                                      # OTEL adapter, transformers, event-stream parser
 ```
 
-## Compile and run the project
+## llm-http-proxy (the package)
+
+`llm-http-proxy` intercepts in-process HTTP/HTTPS traffic to LLM provider hosts
+(OpenAI, Anthropic, Cohere, Mistral, plus caller-supplied hostnames or regexes)
+and emits a typed log entry per call.
+
+- License: MIT — `packages/llm-http-proxy/LICENSE`
+- Version: 0.2.0 — dual-published (CJS + ESM), Node `>=18`
+- Public surface and usage example:
+  [`packages/llm-http-proxy/README.md`](./packages/llm-http-proxy/README.md)
+- Optional peer dependencies: `undici`, `@opentelemetry/api`,
+  `@opentelemetry/sdk-trace-base`
+
+What it gives you:
+
+- A `Logger` seam — any `(entry: LlmLogEntry) => void` function, plus an
+  opt-in `otelSpanLogger` that activates only when the `@opentelemetry/*`
+  peers are installed.
+- A `ProviderParser` seam — plug your own model/token extraction, or use the
+  bundled `defaultParser` which covers OpenAI / Anthropic / Cohere / Mistral
+  through one shape.
+- Synchronous `requestTransform` and `responseTransform` hooks; the response
+  hook runs once over the buffered body or once per SSE event.
+- A default payload-redaction pass (`redact()`) over a conservative
+  PII / credential / financial field-name list; by default no body content is
+  ever emitted.
+
+## Install and run
 
 ```bash
-# development
-$ pnpm run start
-
-# watch mode
-$ pnpm run start:dev
-
-# production mode
-$ pnpm run start:prod
+pnpm install
+pnpm run start:dev       # Nest in watch mode
+pnpm run start           # one-shot
+pnpm run start:prod      # node dist/main
 ```
 
-## Run tests
+## Test
 
 ```bash
-# unit tests
-$ pnpm run test
-
-# e2e tests
-$ pnpm run test:e2e
-
-# test coverage
-$ pnpm run test:cov
+pnpm run test            # Jest unit tests (root)
+pnpm run test:e2e        # Jest e2e (test/)
+pnpm run test:cov        # with coverage
 ```
 
-## Deployment
+The inner package carries its own test suite (unit, provider integration,
+SDK integration, OTEL peers-present/absent, opt-in latency benchmark). See
+[`packages/llm-http-proxy/`](./packages/llm-http-proxy/).
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+## Build
 
 ```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
+pnpm run build           # tsc -> dist/
+pnpm run lint            # eslint --fix
+pnpm run format          # prettier --write
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+## Tech stack
 
-## Resources
+- TypeScript, NestJS 11, Express (`@nestjs/platform-express`)
+- Jest + ts-jest, ESLint 9 + typescript-eslint, Prettier 3
+- pnpm
 
-Check out a few resources that may come in handy when working with NestJS:
+## Status
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+This repository is a personal learning/portfolio piece. The root `elenwatch`
+package is `private: true` with `license: UNLICENSED`; the inner
+`llm-http-proxy` package is MIT-licensed and versioned at 0.2.0. There is no
+public deployment at this time.
 
-## Support
+## Source of truth
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+`docs/marketing/00-product-facts.md` is the single source of truth for any
+promotional material written about this project. No README, post, or pitch may
+claim more than that document supports.
