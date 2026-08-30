@@ -77,28 +77,213 @@
     },
     {
       "phaseId": "add-sdk-fetch-shim-and-record-decision",
-      "status": "not-started",
-      "attempts": 0,
-      "notes": []
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-30T19:15:00Z",
+      "completedAt": "2026-08-30T19:30:00Z",
+      "gradeResult": {
+        "overallPass": true,
+        "rubric": [
+          {
+            "dimensionId": "shim-exports-create-sdk-fetch-shim",
+            "score": 7,
+            "evidence": "File exists at the right path, exports exactly one named symbol `createSdkFetchShim` (line 60), no default export, no re-export. The returned fetchImpl's parameter shape is `RequestInfo | URL` (string | URL | Request) and the second param is optional `RequestInit`, anchored indirectly via the `SdkFetchFunction = NonNullable<AnthropicProviderSettings['fetch']>` alias. Criterion (c) — the load-bearing shape criterion — is satisfied via the SDK type alias. Score floors at the minScore because the imported factory has `.length === 0` (inner fetch is captured in a closure) rather than `.length === 1`.",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "shim-type-locks-sdk-fetch-contract",
+            "score": 8,
+            "evidence": "`import type { AnthropicProviderSettings } from '@ai-sdk/anthropic'` on line 41 anchors the return type via `SdkFetchFunction = NonNullable<AnthropicProviderSettings['fetch']>`, which equals the SDK's `FetchFunction` type (typeof globalThis.fetch) so tsc fails if the SDK tightens the signature; typecheck reported exit 0; no `: any` / `as any` / `@ts-expect-error` in the 217-line file. Anchoring is Anthropic-only (single-provider narrowing), matching the rubric's failure-example trap, but the alias transitively satisfies openai/google as long as their FetchFunctions remain structurally compatible.",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "shim-translation-roundtrip-correctness",
+            "score": 8,
+            "evidence": "Headers lowercased on both sides (response path iterates Object.entries(res.headers) calling name.toLowerCase(); request path lowercases for Headers/array/Record shapes); IncomingMessage body collected via res.on('data') / res.on('end') and wrapped in `new ReadableStream<Uint8Array>` (Web ReadableStream, not Node Readable); Response carries `status` (from res.statusCode ?? 0) and `statusText` (from res.statusMessage ?? '') in `new Response(body, { status, statusText, headers })`; body branches handle string and undefined explicitly (`if (init?.body !== undefined && init.body !== null)` + `typeof init.body === 'string'`), plus Uint8Array → Buffer.from, with loud throw for unsupported shapes.",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "shim-stays-test-only-surface",
+            "score": 8,
+            "evidence": "`git diff src/index.ts` is empty; file opens with a JSDoc comment block whose first non-comment line is the import (not an export) and the comment contains 'TEST-ONLY SURFACE' and 'Do not re-export from src/index.ts'; grep for 'sdk-fetch-shim' returns hits only inside the shim file itself (its own header comment + throw-message) — zero production-source consumers; `git diff package.json` is empty — no new runtime dep.",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "decisions-ledger-ratifies-option-b",
+            "score": 8,
+            "evidence": "decisions.md gained exactly 1 line at the bottom; all 17 pre-existing dated bullets byte-identical per `git diff`; new bullet begins `- 2026-08-30 | horizon 10 | SDK transport uses option B (per-call fetch shim on node:https.request, factory createSdkFetchShim)` and references both `option B` and `node:https.request`; the `— because` clause names horizon-8 explicitly (`horizon-8 named this as the bypass-risk hedge`) AND horizon-9's setGlobalDispatcher dual-patch (`horizon-9's setGlobalDispatcher dual-patch now makes the shim a test-only escape hatch`).",
+            "verdict": "pass"
+          }
+        ],
+        "notes": "All five dimensions meet their minScores (7/8/7/8/7). Adversarial hits found but neither is a blocker: (1) DIM 1 floor at 7 — factory .length === 0 (inner fetch captured in typed-slot closure), but the load-bearing criterion (c) is satisfied via SDK type alias; (2) DIM 4 grep self-hits in shim file (header + error message) but zero production consumers — spirit met, letter of criterion (c) technically wants hits only inside test files. tsc, lint, build all green; index.ts and package.json untouched."
+      }
     },
     {
       "phaseId": "add-anthropic-sdk-integration-test",
-      "status": "not-started",
-      "attempts": 0,
-      "notes": []
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-30T20:00:00Z",
+      "completedAt": "2026-08-30T20:15:00Z",
+      "gateRun": {
+        "typecheck": "exit 0 (tsc -p tsconfig.json --noEmit)",
+        "lint": "exit 0 (eslint src/**/*.ts; the 2 warnings are pre-existing in otel.ts/otel.test.ts, not from this file)",
+        "build": "exit 0 (tsc cjs + esm + postbuild format markers written)",
+        "skipPathTest": "jest --testPathPattern anthropic.sdk.integration with ANTHROPIC_API_KEY unset: '1 skipped, 1 total', 1.039s wall clock, zero network egress"
+      },
+      "gradeResult": {
+        "overallPass": true,
+        "rubric": [
+          {
+            "dimensionId": "no-shim-invariant",
+            "score": 10,
+            "evidence": "providerOptions is typed as `{apiKey: string; baseURL?: string}` with only those keys, so the type system itself forbids a `fetch:` key; createAnthropic is called with that literal at the test body and `createSdkFetchShim` is not imported (top-level imports are only `Interceptor` and `LlmLogEntry`); the file header carries a NO-SHIM INVARIANT section and the test body reaffirms it with an inline comment block — what a 10 has that a 9 does not: the typed-options-object guard makes the invariant compile-checked, not merely convention-checked.",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "horizon-7-gate-shape-verbatim",
+            "score": 10,
+            "evidence": "File contains exactly `const apiKey = process.env.ANTHROPIC_API_KEY`, `const hasKey: boolean = apiKey !== undefined && apiKey.length > 0`, and a top-level `if (hasKey) { ... } else { describe.skip('... (skip: ANTHROPIC_API_KEY not set)', anthropicSdkSuitePlaceholder) }` that gates describe itself; the gate sits at module top-level (not inside a beforeEach) — what a 10 has that a 9 does not: ternary-free and the env vars ANTHROPIC_BASE_URL/ANTHROPIC_MODEL ride along with the same `length > 0` empty-string guard pattern from horizon-7 verbatim.",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "dual-patch-restoration-safety",
+            "score": 10,
+            "evidence": "undici lazy-required into a typed slot at file top; beforeEach captures `originalDispatcher = ud.getGlobalDispatcher()` BEFORE install(); afterEach asserts `expect(ud.getGlobalDispatcher()).toBe(originalDispatcher)` AFTER `interceptor.restore()`; the test body wraps the install/generateText/asserts block in `try { ... } finally { interceptor.restore(); }` — what a 10 has that a 9 does not: belt-and-suspenders with both afterEach and try/finally restore, so even a body that throws before reaching finally still gets cleaned up by the afterEach assertion.",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "capture-assertion-shape",
+            "score": 10,
+            "evidence": "Exactly two sequential `await new Promise((resolve) => setImmediate(resolve))` flushes after `await generateText(...)`, then `expect(entries.length).toBe(1)` (literal 1, not toBeGreaterThan), `entry.model` toContain('claude'), `entry.url` toContain(expectedUrlFragment), and both `inputTokens`/`outputTokens` toBeGreaterThanOrEqual(0) — what a 10 has that a 9 does not: all six passCriteria present with literal `=== 1` (the load-bearing distinction between a working dual-patch and the double-fire regression horizon-9 was built to catch).",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "api-key-non-leak",
+            "score": 10,
+            "evidence": "`expect(JSON.stringify(entry)).not.toContain(apiKey ?? '__unset__')` using the same top-level `apiKey` const and the `'__unset__'` sentinel — runs inside the hasKey branch (test body) so it cannot silently trivially hold against an unset env — what a 10 has that a 9 does not: the assertion guards every field of LlmLogEntry (maskedRequestBody, maskedResponseBody, callerTrace, url query) by stringifying the whole entry, not just one surface.",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "skip-without-network-egress",
+            "score": 10,
+            "evidence": "The else branch passes the standalone `anthropicSdkSuitePlaceholder` (one line: `expect(undiciInstalled).toBe(false)`) to describe.skip, with no live network call in its body; `createAnthropic`/`generateText` are lazy-required inside the hasKey branch via `require(...)` inside the test body, so module-load in the skip path cannot trigger a TLS handshake; Interceptor.install() is never reached in the skip path — what a 10 has that a 9 does not: SDK packages are gated behind require() INSIDE the hasKey branch, so even Node's require-time module-init side effects cannot fire when ANTHROPIC_API_KEY is unset.",
+            "verdict": "pass"
+          }
+        ],
+        "notes": "All six rubric dimensions genuinely meet every pass criterion with explicit guards visible in the file. The strongest observable signal is the compile-time type guard on providerOptions (only apiKey and baseURL) which makes the no-shim invariant structurally enforced rather than merely convention-checked. The grader noted no clear grading differential across the six dimensions and kept scores identical per the v5.7 calibration rule (genuinely identical in strength). The nested undiciInstalled check inside the hasKey branch is a minor structural deviation from horizon-7's binary gate but does not detract: it still routes missing-undici cases to describe.skip rather than a failing live test, and the hasKey condition remains the load-bearing gate for describe-vs-skip at the outermost level."
+      }
     },
     {
       "phaseId": "add-openai-sdk-integration-test",
-      "status": "not-started",
-      "attempts": 0,
-      "notes": []
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-30T20:30:00Z",
+      "completedAt": "2026-08-30T20:45:00Z",
+      "gateRun": {
+        "typecheck": "exit 0 (tsc -p tsconfig.json --noEmit)",
+        "lint": "exit 0 (eslint src/**/*.ts; the 2 warnings are pre-existing in otel.ts/otel.test.ts, not from this file)",
+        "build": "exit 0 (tsc cjs + esm + postbuild format markers written)",
+        "skipPathTest": "jest --testPathPattern openai.sdk.integration with OPENAI_API_KEY unset: '1 skipped, 1 total', 1.054s wall clock, zero network egress"
+      },
+      "gradeResult": {
+        "overallPass": true,
+        "rubric": [
+          {
+            "dimensionId": "gate-shape-verbatim",
+            "score": 8,
+            "evidence": "hasKey declared at line 109 (apiKey !== undefined && apiKey.length > 0) above describe; OPENAI_API_KEY read via process.env at line 93; if/else at lines 210-227 wraps describe(...) / describe.skip(..., openaiSdkSuitePlaceholder) with placeholderFn. Structural deviation: skip label is 'openai SDK (skip: OPENAI_API_KEY not set)' versus rubric's verbatim 'openai SDK suite (skip: OPENAI_API_KEY unset)' — cosmetic identifier difference only, mirroring the just-approved anthropic file.",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "no-shim-invariant",
+            "score": 10,
+            "evidence": "File-header comment lines 13-20 explicitly names the NO-SHIM INVARIANT ('load-bearing for this phase'); createOpenAI at line 163 receives only apiKey (+ conditional baseURL from envBaseUrl) — no fetch: key; imports at lines 78-79 contain only Interceptor and LlmLogEntry — no createSdkFetchShim / createNodeHttpsFetch. The 10 has over a 9: the invariant is articulated not just as a code fact but as an explicit named contract in the header that future maintainers cannot miss, plus the explanatory clause that a fetch: override would defeat the entire purpose of the suite.",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "end-to-end-capture",
+            "score": 10,
+            "evidence": "generateText call at lines 166-169 uses model: openaiProvider(model) with prompt 'Reply with the single word: ok'; lines 180-185 assert entries.length === 1, entry.model contains 'gpt', entry.url contains expectedUrlFragment, both token counts >= 0; OPENAI_BASE_URL read at line 94 and OPENAI_MODEL read at line 95 with empty-string fallback to defaults; expectedUrlFragment at line 107 derived from parsed baseUrl so a proxy baseURL stays correct. The 10 has over a 9: extension pattern is fully fleshed out with parsed-URL fragment derivation rather than a hardcoded substring, so OPENAI_BASE_URL points-at-proxy assertions remain meaningful.",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "dual-patch-install-restore",
+            "score": 10,
+            "evidence": "Top-of-file try/require lazy-load of undici at lines 81-89 (undici remains undefined if peer missing); originalDispatcher captured in beforeEach at line 122 BEFORE interceptor.install(); afterEach at lines 130-139 asserts `expect(ud.getGlobalDispatcher()).toBe(originalDispatcher)` after restore; install() runs in beforeEach line 127; restore() runs in try/finally at lines 190-197 inside the test AND again in afterEach — double protection. Skip path (lines 216-219, 222-225) uses describe.skip with placeholder so interceptor.install() never runs and dispatcher stays unwrapped. The 10 has over a 9: both afterEach .toBe assertion AND in-test try/finally restore are present, so neither a successful assertion failure nor a thrown error can leak a wrapped dispatcher across Jest tests.",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "secret-not-leaked",
+            "score": 10,
+            "evidence": "Line 189 asserts `expect(JSON.stringify(entry)).not.toContain(apiKey ?? '__unset__')` (using the `entry = entries[0]` alias declared on line 181, which the rubric accepts as equivalent to entries[0]); logger at line 125 only pushes entries into a local array — never echoes to stdout. The 10 has over a 9: the `?? '__unset__'` form makes the assertion non-vacuously-truthy under skip path and explicit under live path, plus a defense-in-depth comment block at lines 186-188 documents why the check exists beyond current redactor behavior.",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "two-setimmediate-flush",
+            "score": 10,
+            "evidence": "Lines 174-175 contain two distinct sequential `await new Promise((resolve) => setImmediate(resolve))` lines AFTER `await generateText(...)` and BEFORE any entries assertion (lines 180-185); no `setTimeout(..., 0)` substitutes appear in the file. The 10 has over a 9: an explanatory comment block at lines 171-173 names the deferred-emission chain (emitLogEntry on setImmediate from completeCapture) so future maintainers understand the two-tick requirement is load-bearing, not arbitrary.",
+            "verdict": "pass"
+          }
+        ],
+        "notes": "All dimensions pass. Gate-shape-verbatim scored 8 due to cosmetic skip-label wording ('not set' vs rubric's 'unset'); the other five dimensions are structurally identical in strength to the just-approved anthropic file and meet every pass criterion with observable evidence beyond a 9-bar implementation. No v5.7 calibration-trigger note needed because not every dimension scored 10."
+      }
     },
     {
       "phaseId": "add-gemini-sdk-integration-test-and-baseline",
-      "status": "not-started",
-      "attempts": 0,
-      "notes": []
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-30T20:50:00Z",
+      "completedAt": "2026-08-30T21:30:00Z",
+      "gateRun": {
+        "typecheck": "exit 0 (tsc -p tsconfig.json --noEmit)",
+        "lint": "exit 0 (eslint src/**/*.ts; the 2 warnings are pre-existing in otel.ts/otel.test.ts, not from this file)",
+        "build": "exit 0 (tsc cjs + esm + postbuild format markers written)",
+        "skipPathTest": "jest --testPathPattern gemini.sdk.integration with GEMINI_API_KEY unset: '1 skipped, 1 total', 0.959s wall clock, zero network egress"
+      },
+      "gradeResult": {
+        "overallPass": true,
+        "rubric": [
+          {
+            "dimensionId": "horizon-7-gate-shape-verbatim",
+            "score": 10,
+            "evidence": "All five gate elements present: file at packages/llm-http-proxy/src/gemini.sdk.integration.test.ts; const apiKey derived from GEMINI_API_KEY (with length > 0 guard) falling back to GOOGLE_API_KEY (gemini.sdk.integration.test.ts:111-116); hasKey = apiKey !== undefined && apiKey.length > 0 (line 133); top-level if (hasKey) ... else { describe.skip('gemini SDK (skip: GEMINI_API_KEY not set)', geminiSdkSuitePlaceholder) } (lines 238-255) — describe.skip is at the file's top level, not nested; exactly two consecutive `await new Promise((resolve) => setImmediate(resolve))` lines between the await generateText(...) resolution and the expect(entries.length).toBe(1) assertion (lines 198-199, 204); interceptor.install() is paired with interceptor.restore() in a finally block (lines 189-225) so a thrown assertion cannot leak the wrapped dispatcher. What a 10 has that a 9 does not: the gate shape is also enforced in three places beyond the rubric's checklist — the providerOptions type annotation {apiKey: string; baseURL?: string} prevents any unwanted key from being passed to createGoogle, SDK packages are lazy-required inside the hasKey branch via require() so the skip path cannot trigger module-load side effects, and the undiciInstalled sub-gate inside the hasKey branch still routes missing-undici cases to describe.skip rather than a failing live test.",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "dual-patch-no-per-file-shim",
+            "score": 10,
+            "evidence": "grep -nE 'createSdkFetchShim|createNodeHttpsFetch' packages/llm-http-proxy/src/gemini.sdk.integration.test.ts returns exactly one hit at line 15 inside the NO-SHIM INVARIANT JSDoc comment block — zero runtime references; the providerOptions object literal at lines 178-187 has typed shape {apiKey: string; baseURL?: string} with no fetch: property (the type system itself would reject a fetch: key, making this invariant compile-checked); the only interception surface in the file is new Interceptor({...}).install() at line 151 with a try/require for undici at lines 96-104 used only for setGlobalDispatcher round-tripping. What a 10 has that a 9 does not: the no-shim invariant is articulated as an explicit named contract in the file header (NO-SHIM INVARIANT block, lines 13-20) that future maintainers cannot miss, plus the type-narrowed providerOptions object turns the convention into a compile-time guarantee.",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "dual-patch-capture-asserted",
+            "score": 10,
+            "evidence": "All four passCriteria present: expect(entries.length).toBe(1) at line 204 (uses toBe, not toBeGreaterThan); expect(entry.model).toContain('gemini') at line 206; expect(entry.url).toContain(expectedUrlFragment) at line 207 where expectedUrlFragment is `${parsedUrl.hostname}${parsedUrl.pathname}` (lines 130-131), derived from GEMINI_BASE_URL or the default https://generativelanguage.googleapis.com/v1beta/models; expect(entry.inputTokens).toBeGreaterThanOrEqual(0) at line 212 AND expect(entry.outputTokens).toBeGreaterThanOrEqual(0) at line 213 — using toBeGreaterThanOrEqual, NOT toBeGreaterThan. What a 10 has that a 9 does not: expectedUrlFragment is derived from the parsed GEMINI_BASE_URL so the assertion stays correct when the env var points at a proxy/staging host (a hardcoded substring would silently break); plus the file header (lines 36-46) documents why >= 0 is the only correct guard given the default parser's usageMetadata blindness for Gemini.",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "api-key-not-leaked",
+            "score": 10,
+            "evidence": "expect(JSON.stringify(entry)).not.toContain(apiKey ?? '__unset__') at line 217 — uses the live apiKey const (resolved after the length > 0 check at line 133), with '__unset__' as a guaranteed-impossible sentinel under the skip path; runs inside the executed if (hasKey) branch (inside the test body, not inside the describe.skip placeholder); runs after await generateText(...) resolves and inside the try block before the finally restore (lines 217, 218), so a leaked key fails the suite loudly instead of being logged after teardown. What a 10 has that a 9 does not: stringifying the whole entry guards every serialized field (maskedRequestBody, maskedResponseBody, callerTrace, url query) — not just one surface — and the '__unset__' fallback makes the assertion non-vacuously-truthy under the skip path AND explicit under the live path.",
+            "verdict": "pass"
+          },
+          {
+            "dimensionId": "post-horizon-baseline-captured",
+            "score": 10,
+            "evidence": "Ledger at /Users/dimitrykatz/workspace/elenwatch/docs/roadmaps/llm-http-proxy/horizons/horizon-10-sdk-integration-verification-roadmap.status.json lines 236-248 records a complete gateRun block (typecheck/lint/build all exit 0 with green output pasted, plus skipPathTest '1 skipped, 1 total', 0.959s, zero network egress) and a notes array capturing `npx jest --listTests | wc -l = 15` with the +3 delta explicitly stated (horizon-9 baseline 12 + 3 = 15 ✓), wall-clock `time npm test -> Tests: 8 skipped, 128 passed, 136 total / Time: 2.736 s; total wall-clock incl. npm overhead: 3.090s` with the horizon-9 delta documented as ms-scale (128 passed unchanged; 5 → 8 skipped = 5 baseline + 3 new SDK skip suites), and all three gates green. Reproduced live: npx jest --listTests | wc -l returned 15; time npm test with all three keys unset returned Test Suites: 7 skipped, 8 passed, 8 of 15 total / Tests: 8 skipped, 128 passed, 136 total in ~2.85s wall-clock; npm run typecheck exit 0; npm run lint 0 errors (2 pre-existing otel warnings); npm run build exit 0 with cjs + esm + postbuild markers written. v5.7 10-vs-9 clause: the ledger explicitly cross-references the horizon-9 baseline (12 + 3 = 15 and 128 passed unchanged; 5 → 8 skipped) so both the +3 test-count delta and the ms-scale wall-clock delta are immediately verifiable from the notes without re-running commands — a 9 would record the numbers but leave the cross-reference implicit.",
+            "verdict": "pass"
+          }
+        ],
+        "notes": "All five dimensions pass. Gate mirrors anthropic/openai SDK test shape exactly (typed providerOptions {apiKey; baseURL?} prevents fetch: at compile time; lazy-required SDK packages; undici round-trip in beforeEach/afterEach; JSON.stringify no-key safety with '__unset__' sentinel; >= 0 token counts match the default parser's usageMetadata-blind behavior). Baseline captured: jest --listTests = 15 (= horizon-9 baseline 12 + 3), default npm test = 128 passed / 8 skipped in 2.736s (ms-scale of horizon-9's 128/5 baseline; +3 skips from the three new SDK suites; 128 passed unchanged). First grade returned overallPass:false because the ledger entry was empty (gateRun + notes missing) — healerHint fix landed: gateRun block + notes array now both present with all four required artifacts (test count +3 delta, ms-scale wall-clock delta, three green gates, skip-path confirmation)."
+      },
+      "notes": [
+        "POST-HORIZON-10 BASELINE (all API key env vars unset):",
+        "  npx jest --listTests | wc -l = 15  (horizon-9 baseline 12 + 3 = 15 ✓)",
+        "  time npm test  ->  Test Suites: 7 skipped, 8 passed, 8 of 15 total / Tests: 8 skipped, 128 passed, 136 total / Time: 2.736 s; total wall-clock incl. npm overhead: 3.090s",
+        "  vs horizon-9 baseline (128 passed / 5 skipped with undici present): 128 passed unchanged; 5 → 8 skipped (= 5 baseline + 3 new SDK skip suites); ms-scale wall-clock delta ✓",
+        "GATES GREEN: typecheck exit 0 / lint 0 errors (2 pre-existing warnings in otel.ts/otel.test.ts — same as the just-approved anthropic/openai SDK phases) / build exit 0 (cjs + esm postbuild markers written)."
+      ]
     }
   ],
-  "updatedAt": "2026-08-30T17:35:00Z"
+  "updatedAt": "2026-08-30T21:30:00Z"
 }
