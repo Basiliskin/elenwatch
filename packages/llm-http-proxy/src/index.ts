@@ -22,6 +22,7 @@ export {
 export type { RedactionConfig } from './redaction';
 export { consoleLogger, noopLogger } from './logger';
 export type { Logger } from './logger';
+export { otelSpanLogger } from './otel';
 export type {
   InterceptorOptions,
   LlmLogEntry,
