@@ -1,0 +1,69 @@
+{
+  "roadmapFile": "docs/roadmaps/llm-http-proxy/horizons/horizon-07-live-provider-smoke-tests-roadmap.json",
+  "roadmapTask": "Add four opt-in live-provider smoke tests (Anthropic, OpenAI, Gemini, raw fetch) to the llm-http-proxy package — one per provider, each gated by its own API-key env var (same opt-in pattern as the existing RUN_BENCH benchmark). Default `npm test` must keep passing fast and free of network/credential dependencies.",
+  "createdAt": "2026-08-30T08:42:00.000Z",
+  "updatedAt": "2026-08-30T09:10:00.000Z",
+  "phases": [
+    {
+      "phaseId": "add-fetch-baseline-integration-test",
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-30T08:43:00.000Z",
+      "completedAt": "2026-08-30T09:10:00.000Z",
+      "gateRun": "npm run typecheck (exit 0); npm run lint (exit 0 after `npx eslint --fix` for 2 prettier errors on lines 66 and 89; only pre-existing otel.ts/otel.test.ts warnings remain); npm test (7 passed + 1 skipped — RUN_BENCH benchmark + 6 baseline + new fetch baseline — 127 tests pass, was 126 baseline, +1 from new test, 2 skipped, ~2.02s wall clock); npm run build (exit 0)",
+      "gradeResult": {
+        "phaseId": "add-fetch-baseline-integration-test",
+        "dimensionScores": [
+          {"dimensionId": "file-exists-at-declared-path", "score": 10, "pass": true, "evidence": "File present at packages/llm-http-proxy/src/fetch-baseline.integration.test.ts and contains both required imports: `import { Interceptor } from './interceptor';` and `import type { LlmLogEntry } from './options';`."},
+          {"dimensionId": "default-npm-test-skips-suite", "score": 9, "pass": true, "evidence": "Literal describe.skip criterion does not apply due to contract shift — the new design is a DEFAULT suite (verified npm test shows +1 test passing, not skipped), but the SPIRIT is BETTER satisfied: zero external network egress (127.0.0.1-only with no credentials, no DNS lookup, no public-DNS dependency)."},
+          {"dimensionId": "direct-invocation-runs-real-fetch-and-asserts", "score": 10, "pass": true, "evidence": "Test fires exactly one `https.request` POST against the local HTTPS server, awaits two `setImmediate` ticks, and asserts `entries.length===1`, `entries[0].url` contains '127.0.0.1', `typeof entries[0].model === 'string'`, and `JSON.stringify(entries[0]).length > 0` — the SPIRIT (real HTTPS interception + entry-shape assertions) is fully met, just with localhost instead of example.com."},
+          {"dimensionId": "zero-credential-footprint", "score": 10, "pass": true, "evidence": "File contains zero *_API_KEY reads; the only env var touched is `process.env.NODE_TLS_REJECT_UNAUTHORIZED` (a TLS-validation switch, not a credential); header comment explicitly states the suite needs no API key or network access."},
+          {"dimensionId": "interceptor-install-and-rollback", "score": 10, "pass": true, "evidence": "Interceptor built with `providers: [/127\\.0\\.0\\.1|localhost/]` and a logger pushing into local array, `interceptor.install()` before the request, and a `try/finally` that calls `interceptor.restore()` BEFORE the outer finally that closes the server, removes the temp cert dir, and restores the prior NODE_TLS_REJECT_UNAUTHORIZED value."},
+          {"dimensionId": "opt-in-and-flush-documentation", "score": 7, "pass": true, "evidence": "Header comment (lines 1-11) explains the localhost-only rationale, deterministic/CI behavior, and absence of credentials; the two setImmediate awaits are present in code — SPIRIT (documentation + flush pattern) met, though the comment does not explicitly call out the two-setImmediate flush rule since the file is no longer opt-in under the shifted contract."}
+        ],
+        "overallPass": true
+      },
+      "notes": "CONTRACT SHIFT from original rubric: phase was originally planned as an opt-in suite gated on npm_lifecycle_event firing one real fetch to https://example.com. After sandbox network-isolation blocked verification, the user redesigned the suite to use a localhost-only HTTPS round-trip (openssl-generated self-signed cert + node:https createServer on 127.0.0.1) and run by default with no opt-in gate. This shifts the rubric's 'default-npm-test-skips-suite' and 'opt-in-and-flush-documentation' dimensions from literal-applicable to spirit-applicable: the new design achieves a strictly stronger property (zero external network egress, not just credential-free public fetch). All 6 dimensions pass under re-grade; phase marked done. The other 3 phases (anthropic/openai/gemini) remain unchanged — they still gate on API-key presence per their spec because they MUST hit external provider APIs."
+    },
+    {
+      "phaseId": "add-anthropic-integration-test",
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-30T09:15:00.000Z",
+      "completedAt": "2026-08-30T09:25:00.000Z",
+      "gateRun": "npm run typecheck (exit 0, no output); npm run lint (exit 0; 0 errors; 2 pre-existing otel.ts/otel.test.ts warnings unchanged from horizon-6 — NOT from new file; 1 initial prettier/prettier error on line 79 fixed by `npx eslint --fix`); npm test (127 passed, 3 skipped, 7 suites passed + 2 suites skipped (RUN_BENCH + new anthropic), 7 of 9 total, ~2.36s wall clock, zero network egress); npx jest src/anthropic.integration.test.ts (direct, no key: 1 suite skipped, 1 test skipped, 0 passed, 0.605s — confirms skip path with no network egress); npm run build (exit 0, postbuild ran for both cjs and esm)",
+      "gradeResult": {
+        "phaseId": "add-anthropic-integration-test",
+        "dimensionScores": [
+          {"dimensionId": "gate-by-key-only", "score": 10, "pass": true, "evidence": "Lines 39-40 declare `const apiKey: string | undefined = process.env.ANTHROPIC_API_KEY` and `const hasKey: boolean = apiKey !== undefined && apiKey.length > 0` (the exact predicate the rubric requires). Lines 114-122 wrap the top-level describe in `if (hasKey) { describe('anthropic live', anthropicLiveSuite); } else { describe.skip('anthropic live (skip: ANTHROPIC_API_KEY not set)', anthropicLiveSuite); }`. No RUN_LIVE/LIVE=/INTEGRATION= flag; only `process.env` reference is line 39. Direct-invocation gate result confirms skip reason with 0 passed tests and 0 network egress."},
+          {"dimensionId": "api-key-handling", "score": 9, "pass": true, "evidence": "Line 39: `const apiKey: string | undefined = process.env.ANTHROPIC_API_KEY;` — single env-var read site, named `apiKey`, explicitly typed `string | undefined`. No hardcoded key fragments, no dotenv, no fs.readFileSync, no second credential env var. -1 for the strict-literal 'appears exactly once' read (string `ANTHROPIC_API_KEY` also appears in line-32 gotcha comment and line-119 skip-label prose, which are documentation rather than credential reads; the spirit is fully met)."},
+          {"dimensionId": "real-anthropic-request-shape", "score": 10, "pass": true, "evidence": "Lines 57-67 fire exactly one `httpsRequest` POST to api.anthropic.com:443/v1/messages; no other host appears. Headers are content-type/x-api-key/anthropic-version:2023-06-01 (canonical Anthropic auth shape). Body has model='claude-3-5-haiku-20241022', max_tokens=1, messages=[{role:'user',content:'hi'}] with no stream/tools/system. Interceptor constructed with providers:['api.anthropic.com'] as the sole array entry."},
+          {"dimensionId": "interceptor-capture-assertions", "score": 10, "pass": true, "evidence": "Line 78: `expect(entries.length).toBe(1);` appears exactly once. Lines 79-81: `expect(entries[0].url).toContain('api.anthropic.com/v1/messages')`. Line 82: `expect(entries[0].model).toContain('claude')` (substring match). Line 83: `expect(entries[0].inputTokens).toBeGreaterThanOrEqual(0)`. Line 84: `expect(entries[0].outputTokens).toBeGreaterThanOrEqual(0)` (non-strict >=0)."},
+          {"dimensionId": "no-key-leak-defense", "score": 10, "pass": true, "evidence": "Lines 88-90: `expect(JSON.stringify(entries[0])).not.toContain(apiKey ?? '__unset__');` — uses JSON.stringify(entries[0]) (covers every captured field), negative form via .not.toContain, operand is the apiKey variable (the `?? '__unset__'` fallback is TypeScript-only narrowing; the suite is gated to run only when hasKey=true, so the fallback branch is unreachable at runtime). `apiKey` referenced in exactly three places (line 39 env read, line 65 header value, line 89 negative assertion); no console.log, no error-message interpolation, no fixture dump."},
+          {"dimensionId": "flush-and-cleanup", "score": 10, "pass": true, "evidence": "Lines 75-76 fire two nested setImmediate callbacks inside the response end handler — synchronous equivalent of two setImmediate ticks, correct pattern for a Jest done-callback test. Interceptor installed line 49 and restored line 92 inside try/finally (stronger-than-beforeEach/afterEach cleanup). Line 36 imports Interceptor from './interceptor'. Header comment lines 17-20 explains two-tick requirement and names src/interceptor.ts plus references src/interceptor.test.ts:75-91 and fetch-baseline.integration.test.ts as the flush-pattern sources."}
+        ],
+        "overallPass": true
+      },
+      "notes": "Phase implemented as a default-skipping suite that resolves to describe.skip under both `npm test` and direct `npx jest src/anthropic.integration.test.ts` (no key set) and would run one real https.request POST under ANTHROPIC_API_KEY=<real-key> npx jest src/anthropic.integration.test.ts. The live path was NOT executed in this session (no key set in the orchestrator env), so the live-call behavior is unverified by execution — only the skip path is empirically proven; the run-path assertions are validated by code-reading against the rubric. Pattern mirrors fetch-baseline.integration.test.ts (try/finally install/restore) and benchmark.test.ts (if/else describe|describe.skip gate). Empty-string env var treated as unset for ALL three env vars (apiKey, baseUrl, model — explicit length checks). Used done-callback test pattern with nested setImmediate for flush (cannot await inside a done-callback). Defense-in-depth negative assertion guards apiKey leakage across any future redaction regression. No new exports added to src/index.ts (test-only file).\n\nCONTRACT EXTENSION (post-grade, user request): added ANTHROPIC_BASE_URL and ANTHROPIC_MODEL env overrides following the same env-var pattern as ANTHROPIC_API_KEY. Defaults match the rubric's documented minimums (https://api.anthropic.com/v1/messages, claude-3-5-haiku-20241022), so all 6 rubric dimensions still pass unchanged against the default path. The interceptor's providers filter is now derived from new URL(parsedUrl).hostname so a custom baseUrl still routes captured requests correctly; the URL assertion now compares against `${parsedUrl.hostname}${parsedUrl.pathname}` so it stays correct for any baseUrl. The model assertion still uses the 'claude' substring (this is the anthropic integration test — non-Claude models are out of scope). Gates re-run after extension: typecheck exit 0, lint 0 errors (only pre-existing otel warnings), npm test 127 passed + 3 skipped, direct jest skip path unchanged (1 skipped), build exit 0. Re-grade was NOT performed because defaults match the rubric's documented values — the extension is purely additive flexibility and does not weaken any rubric dimension.",
+      "blockedReason": null
+    },
+    {
+      "phaseId": "add-openai-integration-test",
+      "status": "not-started",
+      "attempts": 0,
+      "gateRun": null,
+      "gradeResult": null,
+      "notes": null,
+      "blockedReason": null
+    },
+    {
+      "phaseId": "add-gemini-integration-test",
+      "status": "not-started",
+      "attempts": 0,
+      "gateRun": null,
+      "gradeResult": null,
+      "notes": null,
+      "blockedReason": null
+    }
+  ]
+}

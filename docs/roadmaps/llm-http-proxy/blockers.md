@@ -24,3 +24,9 @@
 - 2026-08-29 | horizon 6 | does the recorded request-path p99 FAIL (173.88% of baseline) close the latency bar as a recorded environmental miss, or is a clean re-run owed before the full objective is claimable?
 - 2026-08-29 | horizon 6 | do the chosen @opentelemetry/* peerDependency ranges actually satisfy a real consumer's npm install, or was only local devDependency resolution exercised?
 - 2026-08-29 | horizon 6 | which still-open blockers (semver-freeze, monkey-patch seam, workspaces/CI, payload-capture guarantee, streaming) actually gate a real publish versus being post-publish product decisions?
+- 2026-08-30 | horizon 7 | do the 4 new *.integration.test.ts files actually pass against real provider APIs, or does any single one fail (rate-limit, model-name drift, network firewall) and reveal a latent bug? [post-execution empirical validation]
+- 2026-08-30 | horizon 7 | does post-horizon-7 `npm test` (no env vars) still complete in the recorded 126-test baseline wall-clock time, or does describe.skip overhead creep up across 4 new files?
+- 2026-08-30 | horizon 7 | is the horizon-5 p99 FAIL (173.88% of baseline, environmental noise) still the open latency item after live smoke tests, or can the bar be declared met by decision?
+- 2026-08-30 | horizon 7 | does `JSON.stringify(entry)`-no-key assertion actually prove Gemini URL-key safety, or could a raw capture fallback / debug emitter / future maskedResponseBody change re-leak the key?
+- 2026-08-30 | horizon 7 | is the package still publish-clean after horizon-7 (no new public API, no version bump, dist still absent), or does the live-test discipline need a README bump that was deferred?
+- 2026-08-30 | horizon 7 | did adding live tests push the package off 0.2.0 semver-wise (tests reference LlmLogEntry fields and provider URLs that could quietly become a stability contract), or is the surface still open to evolve?
