@@ -65,6 +65,12 @@ const expectedUrlFragment = `${parsedUrl.hostname}${parsedUrl.pathname}`;
 
 const hasKey: boolean = apiKey !== undefined && apiKey.length > 0;
 
+// When OPENAI_BASE_URL points at a proxy/gateway rather than api.openai.com,
+// the upstream may answer with its own model id (not a `gpt-*` string), so
+// the vendor-name assertion is relaxed to "a non-empty model was captured".
+const usesCustomBaseUrl: boolean =
+  envBaseUrl !== undefined && envBaseUrl.length > 0;
+
 function openaiLiveSuite(): void {
   test('one real OpenAI Chat Completions call is captured by the interceptor', (done) => {
     const entries: LlmLogEntry[] = [];
@@ -103,7 +109,11 @@ function openaiLiveSuite(): void {
               try {
                 expect(entries.length).toBe(1);
                 expect(entries[0].url).toContain(expectedUrlFragment);
-                expect(entries[0].model).toContain('gpt');
+                if (usesCustomBaseUrl) {
+                  expect(entries[0].model.length).toBeGreaterThan(0);
+                } else {
+                  expect(entries[0].model).toContain('gpt');
+                }
                 expect(entries[0].inputTokens).toBeGreaterThanOrEqual(0);
                 expect(entries[0].outputTokens).toBeGreaterThanOrEqual(0);
                 // Defense-in-depth: the captured entry must never echo the
