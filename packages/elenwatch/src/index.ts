@@ -1,5 +1,5 @@
 /**
- * llm-http-proxy — near-zero-latency interception of in-process LLM provider
+ * elenwatch — near-zero-latency interception of in-process LLM provider
  * HTTP/HTTPS traffic.
  *
  * Public API surface. Later horizons add transformer pipelines and an OTEL

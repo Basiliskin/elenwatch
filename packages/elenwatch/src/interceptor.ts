@@ -1,5 +1,5 @@
 /**
- * llm-http-proxy interceptor core.
+ * elenwatch interceptor core.
  *
  * Captures in-process LLM provider HTTP/HTTPS traffic by patching TWO
  * surfaces once process-wide (singleton guarded):
@@ -117,24 +117,24 @@ interface CaptureState {
   probe?: { buffer: Buffer; probed: boolean };
 }
 
-const kCapture = Symbol('llm-http-proxy.capture');
+const kCapture = Symbol('elenwatch.capture');
 // Negative capture-decision cache: once shouldCapture says false for a
 // request, the tag is set and every wrapper short-circuits without re-
 // running the decision. Scoped to the request instance, so it cannot go
 // stale (hostname is fixed after construction) and restore() needs no
 // cleanup.
-const kNoCapture = Symbol('llm-http-proxy.noCapture');
+const kNoCapture = Symbol('elenwatch.noCapture');
 
 // Install guard stored on the prototype itself: a second Interceptor (or a
 // second install()) can never stack a second write/end wrapper.
-const kWriteWrapper = Symbol('llm-http-proxy.writeWrapper');
-const kEndWrapper = Symbol('llm-http-proxy.endWrapper');
-const kOnWrapper = Symbol('llm-http-proxy.onWrapper');
+const kWriteWrapper = Symbol('elenwatch.writeWrapper');
+const kEndWrapper = Symbol('elenwatch.endWrapper');
+const kOnWrapper = Symbol('elenwatch.onWrapper');
 // Install guard tagged on the WrappingDispatcher instance itself: lets
 // install() detect that the global dispatcher is already our wrapper and
 // skip re-wrapping, and lets restore() assert reference identity before
 // reinstating the captured original.
-const kDispatcherWrapper = Symbol('llm-http-proxy.dispatcherWrapper');
+const kDispatcherWrapper = Symbol('elenwatch.dispatcherWrapper');
 
 /** Shape returned by `undici.getGlobalDispatcher()`. Same class hierarchy
  *  that `typeof import('undici').Dispatcher` resolves to through the
@@ -900,8 +900,8 @@ export class Interceptor {
       ) as ClientRequest;
     };
 
-    Object.defineProperty(writeWrapper, 'name', { value: 'llmHttpProxyWrite' });
-    Object.defineProperty(endWrapper, 'name', { value: 'llmHttpProxyEnd' });
+    Object.defineProperty(writeWrapper, 'name', { value: 'elenwatchWrite' });
+    Object.defineProperty(endWrapper, 'name', { value: 'elenwatchEnd' });
 
     // Store the pristine originals on the wrappers themselves so restore()
     // can reinstate them by reference identity.
@@ -1533,7 +1533,7 @@ export function captureCallerTrace(): string {
     }
     // Skip our own module and any node-internal / node_modules frame.
     if (
-      line.includes('llm-http-proxy') ||
+      line.includes('elenwatch') ||
       line.includes('node_modules') ||
       line.includes('node:') ||
       line.includes('internal/')

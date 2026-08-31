@@ -10,7 +10,7 @@ Every fact traced to a repository file, the README, or the user. The `source:` f
 
 ### Repository layout and tech stack
 
-- The repository is named `elenwatch` and contains a NestJS host application at the root plus a locally-linked npm package at `packages/llm-http-proxy/` — source: `package.json`
+- The repository is named `elenwatch` and contains a NestJS host application at the root plus a locally-linked npm package at `packages/elenwatch/` — source: `package.json`
 - Written in TypeScript — source: `package.json`
 - Root application runs on NestJS 11 (`@nestjs/common`, `@nestjs/core`, `@nestjs/platform-express` all at `^11.0.1`) — source: `package.json`
 - HTTP platform is Express (`@nestjs/platform-express`) — source: `package.json`
@@ -22,7 +22,7 @@ Every fact traced to a repository file, the README, or the user. The `source:` f
 ### Root package metadata
 
 - Root `package.json` has `name: "elenwatch"`, `version: "0.0.1"`, `private: true`, `license: "UNLICENSED"` — source: `package.json`
-- Root depends on a local link `llm-http-proxy: link:packages/llm-http-proxy` — source: `package.json`
+- Root depends on a local link `elenwatch: link:packages/elenwatch` — source: `package.json`
 
 ### Root application behavior
 
@@ -47,64 +47,64 @@ Every fact traced to a repository file, the README, or the user. The `source:` f
 - AppModule lifecycle tests pin the contract that importing `AppModule` does NOT patch `http.ClientRequest.prototype` until `app.init()` runs, and that the patch is released on `app.close()` — source: `src/app.module.spec.ts`
 - AppModule tests assert a real outbound HTTP call (host header `api.openai.com`) through the booted app is captured and logged via `consoleLogger` — source: `src/app.module.spec.ts`
 
-### llm-http-proxy package metadata
+### elenwatch package metadata
 
-- Package name `llm-http-proxy`, version `0.2.0`, `license: MIT` — source: `packages/llm-http-proxy/package.json`
-- Author listed as `Dimitry Katz <dimitry.kazt@gmail.com>` — source: `packages/llm-http-proxy/package.json`
-- Dual-publish: `main` is `./dist/cjs/index.js`, `module` is `./dist/esm/index.js`, `exports` map points both — source: `packages/llm-http-proxy/package.json`
-- Engines require Node `>=18` — source: `packages/llm-http-proxy/package.json`
-- `sideEffects: false` — source: `packages/llm-http-proxy/package.json`
-- `undici` (`^6.0.0 || ^7.0.0`), `@opentelemetry/api` (`^1.9.1`), and `@opentelemetry/sdk-trace-base` (`^2.10.0`) are listed as optional peer dependencies — source: `packages/llm-http-proxy/package.json`
-- `keywords` declare `llm`, `http`, `interceptor`, `proxy`, `telemetry`, `openai`, `anthropic`, `cohere`, `mistral` — source: `packages/llm-http-proxy/package.json`
-- MIT license file is present at `packages/llm-http-proxy/LICENSE` (copyright 2026) — source: `packages/llm-http-proxy/LICENSE`
+- Package name `elenwatch`, version `0.2.0`, `license: MIT` — source: `packages/elenwatch/package.json`
+- Author listed as `Dimitry Katz <dimitry.kazt@gmail.com>` — source: `packages/elenwatch/package.json`
+- Dual-publish: `main` is `./dist/cjs/index.js`, `module` is `./dist/esm/index.js`, `exports` map points both — source: `packages/elenwatch/package.json`
+- Engines require Node `>=18` — source: `packages/elenwatch/package.json`
+- `sideEffects: false` — source: `packages/elenwatch/package.json`
+- `undici` (`^6.0.0 || ^7.0.0`), `@opentelemetry/api` (`^1.9.1`), and `@opentelemetry/sdk-trace-base` (`^2.10.0`) are listed as optional peer dependencies — source: `packages/elenwatch/package.json`
+- `keywords` declare `llm`, `http`, `interceptor`, `proxy`, `telemetry`, `openai`, `anthropic`, `cohere`, `mistral` — source: `packages/elenwatch/package.json`
+- MIT license file is present at `packages/elenwatch/LICENSE` (copyright 2026) — source: `packages/elenwatch/LICENSE`
 
-### llm-http-proxy public API
+### elenwatch public API
 
-- Entry point re-exports `Interceptor`, `deriveUrl`, `captureCallerTrace`, `shouldCapture`, `defaultParser`, `defaultEstimateInputTokens`, `defaultExtractOutputTokens`, `redact`, `DEFAULT_PLACEHOLDER`, `DEFAULT_SENSITIVE_FIELDS`, `DEFAULT_REDACTION_CONFIG`, `consoleLogger`, `noopLogger`, `otelSpanLogger` — source: `packages/llm-http-proxy/src/index.ts`
-- Re-exported types: `ProviderParser`, `ParseResult`, `RedactionConfig`, `Logger`, `InterceptorOptions`, `LlmLogEntry`, `TokenCounter`, `RequestTransformer`, `ResponseTransformer` — source: `packages/llm-http-proxy/src/index.ts`
-- Exports a string constant `VERSION = '0.2.0'` — source: `packages/llm-http-proxy/src/index.ts`
+- Entry point re-exports `Interceptor`, `deriveUrl`, `captureCallerTrace`, `shouldCapture`, `defaultParser`, `defaultEstimateInputTokens`, `defaultExtractOutputTokens`, `redact`, `DEFAULT_PLACEHOLDER`, `DEFAULT_SENSITIVE_FIELDS`, `DEFAULT_REDACTION_CONFIG`, `consoleLogger`, `noopLogger`, `otelSpanLogger` — source: `packages/elenwatch/src/index.ts`
+- Re-exported types: `ProviderParser`, `ParseResult`, `RedactionConfig`, `Logger`, `InterceptorOptions`, `LlmLogEntry`, `TokenCounter`, `RequestTransformer`, `ResponseTransformer` — source: `packages/elenwatch/src/index.ts`
+- Exports a string constant `VERSION = '0.2.0'` — source: `packages/elenwatch/src/index.ts`
 
-### llm-http-proxy interception contract
+### elenwatch interception contract
 
-- `LlmLogEntry` carries `timestamp`, `model`, `inputTokens`, `outputTokens`, `callerTrace`, `url`, and optional `maskedRequestBody`, `maskedResponseBody`, `error` — source: `packages/llm-http-proxy/src/options.ts`
-- By default the entry carries no body content; masked-payload fields populate only when `capturePayloads: true` — source: `packages/llm-http-proxy/src/options.ts`
-- `ProviderParser` is a pure function interface with `extractModel`, `estimateInputTokens`, `extractOutputTokens` — source: `packages/llm-http-proxy/src/provider-parser.ts`
-- `defaultParser` extracts model from `model` or `model_name`, falling back to `'unknown'`; estimates input tokens via `ceil(chars / 4)` over messages/prompt/input text; extracts output tokens preferring `usage.completion_tokens` (OpenAI) over `usage.output_tokens` (Anthropic), falling back to `ceil(chars / 4)` over choices/completion/output_text — source: `packages/llm-http-proxy/src/provider-parser.ts`
-- `defaultParser` covers OpenAI, Anthropic, Cohere, and Mistral with a single shape — source: `packages/llm-http-proxy/src/provider-parser.ts`
-- `requestTransform` runs exactly once between chunk capture and wire forwarding; returning `undefined` is passthrough (Content-Length not rewritten) — source: `packages/llm-http-proxy/src/options.ts`
-- `responseTransform` runs once over the full buffered body at `end`, or once per SSE event when the response is `text/event-stream` — source: `packages/llm-http-proxy/src/options.ts`
-- Both transformers are synchronous and must not throw; throwing transformers are caught and treated as passthrough — source: `packages/llm-http-proxy/src/options.ts`
+- `LlmLogEntry` carries `timestamp`, `model`, `inputTokens`, `outputTokens`, `callerTrace`, `url`, and optional `maskedRequestBody`, `maskedResponseBody`, `error` — source: `packages/elenwatch/src/options.ts`
+- By default the entry carries no body content; masked-payload fields populate only when `capturePayloads: true` — source: `packages/elenwatch/src/options.ts`
+- `ProviderParser` is a pure function interface with `extractModel`, `estimateInputTokens`, `extractOutputTokens` — source: `packages/elenwatch/src/provider-parser.ts`
+- `defaultParser` extracts model from `model` or `model_name`, falling back to `'unknown'`; estimates input tokens via `ceil(chars / 4)` over messages/prompt/input text; extracts output tokens preferring `usage.completion_tokens` (OpenAI) over `usage.output_tokens` (Anthropic), falling back to `ceil(chars / 4)` over choices/completion/output_text — source: `packages/elenwatch/src/provider-parser.ts`
+- `defaultParser` covers OpenAI, Anthropic, Cohere, and Mistral with a single shape — source: `packages/elenwatch/src/provider-parser.ts`
+- `requestTransform` runs exactly once between chunk capture and wire forwarding; returning `undefined` is passthrough (Content-Length not rewritten) — source: `packages/elenwatch/src/options.ts`
+- `responseTransform` runs once over the full buffered body at `end`, or once per SSE event when the response is `text/event-stream` — source: `packages/elenwatch/src/options.ts`
+- Both transformers are synchronous and must not throw; throwing transformers are caught and treated as passthrough — source: `packages/elenwatch/src/options.ts`
 
-### llm-http-proxy redaction
+### elenwatch redaction
 
-- `redact()` is idempotent and does not mutate its input — source: `packages/llm-http-proxy/src/redaction.ts`
-- `DEFAULT_SENSITIVE_FIELDS` covers PII (`email`, `phone`, `ssn`, `dob`, names, addresses), credentials (`password`, `apiKey`, `accessToken`, `refreshToken`, `authToken`, `apiToken`, `idToken`, `authorization`, `credential`, `privateKey`, `sessionId`, `cookie`), and financial data (`creditCard`, `cvv`, `cvc`, `iban`, `accountNumber`, `routingNumber`, `salary`, `income`) — source: `packages/llm-http-proxy/src/redaction.ts`
-- Default placeholder string is `[REDACTED]` — source: `packages/llm-http-proxy/src/redaction.ts`
-- Substring matching is used (e.g. `userEmail` hits `email`); bare `token` is intentionally excluded to avoid substring-matching `completion_tokens` / `total_tokens` — source: `packages/llm-http-proxy/src/redaction.ts`
+- `redact()` is idempotent and does not mutate its input — source: `packages/elenwatch/src/redaction.ts`
+- `DEFAULT_SENSITIVE_FIELDS` covers PII (`email`, `phone`, `ssn`, `dob`, names, addresses), credentials (`password`, `apiKey`, `accessToken`, `refreshToken`, `authToken`, `apiToken`, `idToken`, `authorization`, `credential`, `privateKey`, `sessionId`, `cookie`), and financial data (`creditCard`, `cvv`, `cvc`, `iban`, `accountNumber`, `routingNumber`, `salary`, `income`) — source: `packages/elenwatch/src/redaction.ts`
+- Default placeholder string is `[REDACTED]` — source: `packages/elenwatch/src/redaction.ts`
+- Substring matching is used (e.g. `userEmail` hits `email`); bare `token` is intentionally excluded to avoid substring-matching `completion_tokens` / `total_tokens` — source: `packages/elenwatch/src/redaction.ts`
 
-### llm-http-proxy OTEL adapter
+### elenwatch OTEL adapter
 
-- `otelSpanLogger` is exported as a `Logger`-compatible function — source: `packages/llm-http-proxy/src/index.ts`
-- `@opentelemetry/api` is resolved lazily inside a try/catch; when the peer is absent the adapter is a non-throwing no-op — source: `packages/llm-http-proxy/src/otel.ts`
-- When the peer is present the adapter emits a span named `llm-http-proxy.llm-call` on tracer `llm-http-proxy` with start time taken from `entry.timestamp` and attributes copied from the entry's fields — source: `packages/llm-http-proxy/src/otel.ts`
-- The span is ended in a `finally` block, including on the error path; the error path also calls `recordException` and sets `SpanStatusCode.ERROR` — source: `packages/llm-http-proxy/src/otel.ts`
+- `otelSpanLogger` is exported as a `Logger`-compatible function — source: `packages/elenwatch/src/index.ts`
+- `@opentelemetry/api` is resolved lazily inside a try/catch; when the peer is absent the adapter is a non-throwing no-op — source: `packages/elenwatch/src/otel.ts`
+- When the peer is present the adapter emits a span named `elenwatch.llm-call` on tracer `elenwatch` with start time taken from `entry.timestamp` and attributes copied from the entry's fields — source: `packages/elenwatch/src/otel.ts`
+- The span is ended in a `finally` block, including on the error path; the error path also calls `recordException` and sets `SpanStatusCode.ERROR` — source: `packages/elenwatch/src/otel.ts`
 
-### llm-http-proxy tests
+### elenwatch tests
 
-- Provider integration tests exist for fetch baseline, OpenAI, Anthropic, and Gemini — source: `packages/llm-http-proxy/src/fetch-baseline.integration.test.ts`, `packages/llm-http-proxy/src/openai.integration.test.ts`, `packages/llm-http-proxy/src/anthropic.integration.test.ts`, `packages/llm-http-proxy/src/gemini.integration.test.ts`
-- SDK integration tests exist for OpenAI, Anthropic, and Gemini — source: `packages/llm-http-proxy/src/openai.sdk.integration.test.ts`, `packages/llm-http-proxy/src/anthropic.sdk.integration.test.ts`, `packages/llm-http-proxy/src/gemini.sdk.integration.test.ts`
-- Global-fetch-capture integration test proves the dual-patch path; it tees the AsyncIterable body capture inside `dispatch()` and preserves content-length integrity — source: `packages/llm-http-proxy/src/global-fetch-capture.integration.test.ts`, `docs/roadmaps/llm-http-proxy/state.md`
-- Benchmark test (`benchmark.test.ts`) is opt-in via `RUN_BENCH`, uses `hrtime`, runs 1000 warmup + 10000 measured iterations, interleaved — source: `packages/llm-http-proxy/src/benchmark.test.ts`, `docs/roadmaps/llm-http-proxy/state.md`
-- OTEL tests cover peers-present (InMemorySpanExporter round-trip with full attribute and timestamp fidelity) and peers-absent (inertness via `jest.isolateModules` + `jest.doMock`) — source: `packages/llm-http-proxy/src/otel.test.ts`, `docs/roadmaps/llm-http-proxy/state.md`
+- Provider integration tests exist for fetch baseline, OpenAI, Anthropic, and Gemini — source: `packages/elenwatch/src/fetch-baseline.integration.test.ts`, `packages/elenwatch/src/openai.integration.test.ts`, `packages/elenwatch/src/anthropic.integration.test.ts`, `packages/elenwatch/src/gemini.integration.test.ts`
+- SDK integration tests exist for OpenAI, Anthropic, and Gemini — source: `packages/elenwatch/src/openai.sdk.integration.test.ts`, `packages/elenwatch/src/anthropic.sdk.integration.test.ts`, `packages/elenwatch/src/gemini.sdk.integration.test.ts`
+- Global-fetch-capture integration test proves the dual-patch path; it tees the AsyncIterable body capture inside `dispatch()` and preserves content-length integrity — source: `packages/elenwatch/src/global-fetch-capture.integration.test.ts`, `docs/roadmaps/llm-http-proxy/state.md`
+- Benchmark test (`benchmark.test.ts`) is opt-in via `RUN_BENCH`, uses `hrtime`, runs 1000 warmup + 10000 measured iterations, interleaved — source: `packages/elenwatch/src/benchmark.test.ts`, `docs/roadmaps/llm-http-proxy/state.md`
+- OTEL tests cover peers-present (InMemorySpanExporter round-trip with full attribute and timestamp fidelity) and peers-absent (inertness via `jest.isolateModules` + `jest.doMock`) — source: `packages/elenwatch/src/otel.test.ts`, `docs/roadmaps/llm-http-proxy/state.md`
 - Horizon 5 recorded the benchmark verdict: request p50 PASS 0.060ms; request p99 FAIL 173.88% of baseline; buffered response-data 0.000541ms; streaming response-data 0.032083ms/event — source: `docs/roadmaps/llm-http-proxy/state.md`
 - Horizon 6 recorded `npm publish --dry-run` exit 0 with README/LICENSE/dist in the tarball — source: `docs/roadmaps/llm-http-proxy/state.md`
-- Horizon 5 confirmed the npm name `llm-http-proxy` was 404 (free) at decision time on 2026-08-29 — source: `docs/roadmaps/llm-http-proxy/state.md`
+- Horizon 5 confirmed the npm name `elenwatch` was 404 (free) at decision time on 2026-08-29 — source: `docs/roadmaps/llm-http-proxy/state.md`
 
-### llm-http-proxy README
+### elenwatch README
 
-- The package README describes the library as "Near-zero-latency interception of in-process LLM provider HTTP/HTTPS traffic with pluggable loggers, per-provider parsers, request/response transformers, and payload redaction." — source: `packages/llm-http-proxy/README.md`
-- The README example shows `new Interceptor({ logger })`, `interceptor.install()`, and `interceptor.restore()` (idempotent) — source: `packages/llm-http-proxy/README.md`
-- The README states the logger option accepts any function matching `(entry: LlmLogEntry) => void` so consumers can route entries to their own logging or telemetry pipeline — source: `packages/llm-http-proxy/README.md`
+- The package README describes the library as "Near-zero-latency interception of in-process LLM provider HTTP/HTTPS traffic with pluggable loggers, per-provider parsers, request/response transformers, and payload redaction." — source: `packages/elenwatch/README.md`
+- The README example shows `new Interceptor({ logger })`, `interceptor.install()`, and `interceptor.restore()` (idempotent) — source: `packages/elenwatch/README.md`
+- The README states the logger option accepts any function matching `(entry: LlmLogEntry) => void` so consumers can route entries to their own logging or telemetry pipeline — source: `packages/elenwatch/README.md`
 
 ## Repository evidence
 
@@ -123,34 +123,34 @@ Concrete file paths in this repository that back the Verified facts.
 - `src/app.module.spec.ts`
 - `test/app.e2e-spec.ts`
 - `test/jest-e2e.json`
-- `packages/llm-http-proxy/package.json`
-- `packages/llm-http-proxy/LICENSE`
-- `packages/llm-http-proxy/README.md`
-- `packages/llm-http-proxy/src/index.ts`
-- `packages/llm-http-proxy/src/interceptor.ts`
-- `packages/llm-http-proxy/src/options.ts`
-- `packages/llm-http-proxy/src/provider-parser.ts`
-- `packages/llm-http-proxy/src/redaction.ts`
-- `packages/llm-http-proxy/src/logger.ts`
-- `packages/llm-http-proxy/src/otel.ts`
-- `packages/llm-http-proxy/src/sdk-fetch-shim.ts`
-- `packages/llm-http-proxy/src/event-stream-parser.ts`
-- `packages/llm-http-proxy/src/types-undici.d.ts`
-- `packages/llm-http-proxy/src/interceptor.test.ts`
-- `packages/llm-http-proxy/src/provider-parser.test.ts`
-- `packages/llm-http-proxy/src/redaction.test.ts`
-- `packages/llm-http-proxy/src/logger.test.ts`
-- `packages/llm-http-proxy/src/otel.test.ts`
-- `packages/llm-http-proxy/src/benchmark.test.ts`
-- `packages/llm-http-proxy/src/event-stream-parser.test.ts`
-- `packages/llm-http-proxy/src/fetch-baseline.integration.test.ts`
-- `packages/llm-http-proxy/src/openai.integration.test.ts`
-- `packages/llm-http-proxy/src/anthropic.integration.test.ts`
-- `packages/llm-http-proxy/src/gemini.integration.test.ts`
-- `packages/llm-http-proxy/src/openai.sdk.integration.test.ts`
-- `packages/llm-http-proxy/src/anthropic.sdk.integration.test.ts`
-- `packages/llm-http-proxy/src/gemini.sdk.integration.test.ts`
-- `packages/llm-http-proxy/src/global-fetch-capture.integration.test.ts`
+- `packages/elenwatch/package.json`
+- `packages/elenwatch/LICENSE`
+- `packages/elenwatch/README.md`
+- `packages/elenwatch/src/index.ts`
+- `packages/elenwatch/src/interceptor.ts`
+- `packages/elenwatch/src/options.ts`
+- `packages/elenwatch/src/provider-parser.ts`
+- `packages/elenwatch/src/redaction.ts`
+- `packages/elenwatch/src/logger.ts`
+- `packages/elenwatch/src/otel.ts`
+- `packages/elenwatch/src/sdk-fetch-shim.ts`
+- `packages/elenwatch/src/event-stream-parser.ts`
+- `packages/elenwatch/src/types-undici.d.ts`
+- `packages/elenwatch/src/interceptor.test.ts`
+- `packages/elenwatch/src/provider-parser.test.ts`
+- `packages/elenwatch/src/redaction.test.ts`
+- `packages/elenwatch/src/logger.test.ts`
+- `packages/elenwatch/src/otel.test.ts`
+- `packages/elenwatch/src/benchmark.test.ts`
+- `packages/elenwatch/src/event-stream-parser.test.ts`
+- `packages/elenwatch/src/fetch-baseline.integration.test.ts`
+- `packages/elenwatch/src/openai.integration.test.ts`
+- `packages/elenwatch/src/anthropic.integration.test.ts`
+- `packages/elenwatch/src/gemini.integration.test.ts`
+- `packages/elenwatch/src/openai.sdk.integration.test.ts`
+- `packages/elenwatch/src/anthropic.sdk.integration.test.ts`
+- `packages/elenwatch/src/gemini.sdk.integration.test.ts`
+- `packages/elenwatch/src/global-fetch-capture.integration.test.ts`
 - `docs/roadmaps/llm-http-proxy/state.md`
 - `docs/roadmaps/llm-http-proxy/vision.md`
 - `docs/roadmaps/llm-http-proxy/benchmark-results.md`
@@ -166,7 +166,7 @@ Only the four non-derivable categories: production URL, primary goal, open-sourc
 
 - Production URL: none yet — source: user
 - Primary goal: personal learning/portfolio — source: user
-- Open-source status: the inner `llm-http-proxy` package is MIT-licensed; the root `elenwatch` repository is private (`license: UNLICENSED`) — source: user (corroborated by `package.json` and `packages/llm-http-proxy/package.json`)
+- Open-source status: the inner `elenwatch` package is MIT-licensed; the root `elenwatch` repository is private (`license: UNLICENSED`) — source: user (corroborated by `package.json` and `packages/elenwatch/package.json`)
 - Features not visible in the repository: none — source: user
 
 ## Unknown

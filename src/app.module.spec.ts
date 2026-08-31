@@ -1,5 +1,5 @@
 /**
- * AppModule lifecycle tests for the llm-http-proxy bootstrap hook (#10).
+ * AppModule lifecycle tests for the elenwatch bootstrap hook (#10).
  *
  * Pins the horizon-3 contract: importing AppModule must NOT patch
  * ClientRequest.prototype (no import-time install()); the patch applies

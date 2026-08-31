@@ -30,7 +30,7 @@
  * dual-patch in this file, install undici in the package's
  * node_modules (`npm i -D undici --no-save` — `--no-save` keeps
  * package.json unchanged, honoring the horizon-9 success criterion
- * "packages/llm-http-proxy/package.json's peerDependencies/
+ * "packages/elenwatch/package.json's peerDependencies/
  * peerDependenciesMeta unchanged from horizon-9 entries").
  *
  * Test isolation: install/restore are scoped to beforeEach/afterEach

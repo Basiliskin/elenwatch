@@ -1,5 +1,5 @@
 /**
- * Public option types for the llm-http-proxy interceptor.
+ * Public option types for the elenwatch interceptor.
  */
 
 import type { Logger } from './logger';

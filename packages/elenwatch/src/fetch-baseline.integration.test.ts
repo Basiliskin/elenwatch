@@ -20,7 +20,7 @@ import { Interceptor } from './interceptor';
 import type { LlmLogEntry } from './options';
 
 function generateLocalHttpsFiles(): { certPath: string; keyPath: string } {
-  const dir = mkdtempSync(join(tmpdir(), 'llm-http-proxy-https-'));
+  const dir = mkdtempSync(join(tmpdir(), 'elenwatch-https-'));
   const certPath = join(dir, 'localhost-cert.pem');
   const keyPath = join(dir, 'localhost-key.pem');
 

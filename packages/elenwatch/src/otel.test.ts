@@ -68,7 +68,7 @@ describe('otelSpanLogger', () => {
     expect(finished).toHaveLength(1);
 
     const span = finished[0];
-    expect(span.name).toBe('llm-http-proxy.llm-call');
+    expect(span.name).toBe('elenwatch.llm-call');
     expect(span.attributes.model).toBe('gpt-proof-1');
     expect(span.attributes.inputTokens).toBe(42);
     expect(span.attributes.outputTokens).toBe(17);

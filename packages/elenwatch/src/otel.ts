@@ -43,15 +43,15 @@ try {
   otel = undefined;
 }
 
-const TRACER_NAME = 'llm-http-proxy';
-const SPAN_NAME = 'llm-http-proxy.llm-call';
+const TRACER_NAME = 'elenwatch';
+const SPAN_NAME = 'elenwatch.llm-call';
 
 /**
  * A Logger-compatible OpenTelemetry span exporter.
  *
  * When the optional `@opentelemetry/api` peer is installed, each call
- * records exactly one span named `llm-http-proxy.llm-call` on a tracer
- * named `llm-http-proxy`, with start time taken from `entry.timestamp`
+ * records exactly one span named `elenwatch.llm-call` on a tracer
+ * named `elenwatch`, with start time taken from `entry.timestamp`
  * and attributes copied exclusively from the entry's fields. The span
  * is always ended, including on the error path.
  *

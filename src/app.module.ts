@@ -14,7 +14,7 @@ import {
   DEFAULT_SENSITIVE_FIELDS,
   defaultParser,
   VERSION as LLM_HTTP_PROXY_VERSION,
-} from 'llm-http-proxy';
+} from 'elenwatch';
 
 const RECENT_CALLS: LlmLogEntry[] = [];
 const MAX_RECENT = 50;
