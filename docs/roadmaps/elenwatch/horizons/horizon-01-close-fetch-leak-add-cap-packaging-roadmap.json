@@ -1,0 +1,910 @@
+{
+  "task": "Ship elenwatch 0.2.1 as a production-ready patch that closes the providers-filter leak in the fetch/undici path, adds a configurable maxBodyBytes cap, fixes the streamed-request-body race and the synthetic getHeader header-lie, and tightens packaging (single lockfile, build-time VERSION generation, removal of the dead sdk-fetch-shim from dist, separate ESM .d.ts types condition, lint-disable verification) — each fix landed with real positive and negative tests.",
+  "analysis": {
+    "objective": "Ship elenwatch 0.2.1 as a production-ready patch that closes the providers-filter leak in the fetch/undici path, adds a configurable maxBodyBytes cap, fixes the streamed-request-body race and the synthetic getHeader header-lie, and tightens packaging hygiene (single lockfile, build-time VERSION generation, removal of the dead sdk-fetch-shim, separate ESM .d.ts types condition) — each fix landed with real positive and negative tests.",
+    "successDefinition": "All four functional fixes (providers-filter guard, maxBodyBytes cap, streamed-request-body wait, synthetic getHeader truth) and the packaging hygiene bundle ship on a single coherent 0.2.1 patch; every fix has a real test (the missing negative fetch test for non-provider hosts, a deterministic race/concurrency test for the request-body wait, a header-correctness test for the synthetic getHeader fix, a cap-trip test, packaging-sanity tests for the metadata/lockfile/VERSION/shim/exports issues); tsc, eslint, and jest stay green throughout the horizon; `npm pack --dry-run` shows a clean tarball without sdk-fetch-shim and without a duplicate lockfile; `arethetypeswrong` no longer flags the .d.ts types condition; the generated VERSION constant matches package.json's 0.2.1.",
+    "assumptions": [
+      "The line numbers cited in the brief for packages/elenwatch/src/interceptor.ts (258–260, 267, 280–298, 833, 854, 882) are accurate and the described bug shapes match the current code (discovery confirmed 258-260, 267, 833, 854, 882; corrected the race range to 302-396).",
+      "Jest 29 + ts-jest is the test framework (discovery corrected the brief's Vitest assumption), and the existing `providers: [/127\\.0\\.0\\.1|localhost/]` test pattern is the right baseline for tests that DO want capture.",
+      "tsc already produces both dist/esm and dist/cjs; adding a separate `dist/esm/index.d.ts` types condition does not require introducing a new bundler, only verifying tsconfig emits declarations for both.",
+      "The agreed target version is 0.2.1, and the single source of truth is package.json — VERSION is generated at build time from `pkg.version`, never hand-duplicated.",
+      "For the patch-stacking interaction, 'document the limitation at minimum' is the agreed floor; a clearer restoration signal is best-effort and is only included if its diff is small and reviewable in the same horizon — kept for the next horizon via the Planning Brief.",
+      "pnpm is the surviving lockfile: the monorepo layout (packages/elenwatch) implies pnpm-workspace usage, so pnpm-lock.yaml stays and package-lock.json is removed (with a clear note in the commit/README that this repo is pnpm-managed).",
+      "CI is added in the next horizon (deferred), not this one; this horizon ships a working 0.2.1 functionally and the next horizon wraps it in GitHub Actions.",
+      "maxBodyBytes is a defense-in-depth safety net rather than the primary privacy boundary: the default is set high enough not to clip realistic LLM payloads (≈10 MiB) but low enough to bound memory exposure, and a clear log line is emitted when the cap trips.",
+      "Removing sdk-fetch-shim from the dist tree (rather than repairing its @ai-sdk/anthropic deep import type) is the right call because the shim is test-only and unexported — deep imports stop working by design.",
+      "This is a patch release: documented public exports (namedElenwatchWatch, install, restore, etc.) and their signatures are unchanged; only internal behavior and packaging metadata move.",
+      "The synthetic getHeader fix only needs to be correct for the keys elenwatch itself reads (host, content-length, content-type, transfer-encoding) — a fully populated synthetic header map is YAGNI for the present horizon.",
+      "The unused-eslint-disable verification in otel.ts:38 and otel.test.ts:101 may find one or both directives are actually load-bearing under the type-aware rule set (tseslint.configs.recommendedTypeChecked) — keep the directive if lint fails after removal."
+    ],
+    "risks": [
+      "The streamed-request-body race test is timing-sensitive if not built carefully: Node chunk ordering, backpressure, and undici's internal scheduling can make a 'before fix' test flaky. Mitigation: deterministic slow-upload fixture (a transform stream that releases one chunk per microtask) plus an ordering check by code inspection or by intercepting dispatch with a spy, not by waiting.",
+      "The synthetic getHeader fix is a contract change: any code that today reads a non-host header from the synthetic request (e.g., assuming `getHeader('content-length')` returns a number) silently gets undefined after the fix. The host-fallback dimension's passCriteria guards the only in-file consumers (deriveUrl and reqHostname, both reading `host`).",
+      "maxBodyBytes default value is a real tuning risk: too low (e.g., 1 MiB) clips real LLM request payloads and causes false-positive 'body dropped' log noise; too high (e.g., 1 GiB) gives no memory protection. The default is ~10 MiB and the onBodyDropped callback gives operators a structured hook to react.",
+      "Removing package-lock.json from packages/elenwatch/ can break a contributor's local workflow if their editor or test runner cached it. Mitigation: .gitignore line is already present (confirmed by discovery), pnpm-lock.yaml is the surviving lockfile.",
+      "Build-time VERSION generation is a new build step; if it fails silently in CI, dist could ship with a stale VERSION constant. Mitigation: prebuild script in package.json's scripts, and a packaging-build.test.ts that reads built dist and asserts VERSION === package.json's version.",
+      "The patch-stacking interaction under dd-trace/newrelic is fundamentally unfixable in code: elenwatch cannot reliably peel another wrapper off `write`/`end` once those agents have stacked on top after `install()`. Documentation is the honest path; the next horizon carries the README Limitations section.",
+      "arethetypeswrong fix assumes the existing tsc build actually emits an ESM .d.ts. Confirmed by discovery that both tsconfig.cjs.json and tsconfig.esm.json have declaration: true and emit .d.ts to dist/{cjs,esm}/.",
+      "The 0.2.1 patch is bundling four functional fixes plus packaging hygiene — a wide blast radius for a patch version. The phased horizon keeps each fix in a reviewable unit with its own test.",
+      "The two eslint-disable directives in otel.ts:38 and otel.test.ts:101 are flagged as packaging hygiene, but if `--fix` / removal surfaces a real lint violation that was being suppressed, that becomes a real fix, not a removal — the verification step in phase 4 handles this.",
+      "The negative fetch test (non-provider host emits nothing via fetch) is currently missing because every existing test sets `providers: [/127\\.0\\.0\\.1|localhost/]`. The new test must set `providers: [/api\\.openai\\.com/]` (NOT a substring-overlapping regex), fetch `http://127.0.0.1`, and assert no log entry AND no `responseBodyChunks` buffer.",
+      "Caller-supplied acceptance criteria and security invariants align here (no auth bypass, no secret-in-plaintext, no silently unbounded operation) — but the byte cap is a defense-in-depth safety net, not a hard privacy guarantee. Keeping the providers-filter fix and the byte cap as two distinct layers is important: if the cap becomes the de facto privacy boundary because the providers filter regresses again, the privacy model has silently moved."
+    ],
+    "outOfScope": [
+      "Replacing the providers filter with a richer policy DSL — the task asks for the existing filter to be honored, not redesigned.",
+      "Implementing streaming or heuristic token estimation — the task is about bounds and correctness, not improving the estimate itself.",
+      "Migrating from the dual http/https+undici surface to undici-only — the bug lives inside that dual surface; the fix is a guard, not a rewrite.",
+      "Removing the http/https patch path or moving it behind a feature flag — the fix only needs the fetch/undici path to match its existing semantics.",
+      "Repairing sdk-fetch-shim's @ai-sdk/anthropic deep import type — the shim is excluded from dist; deep imports stop working by design.",
+      "Adding CONTRIBUTING.md, .editorconfig, LICENSE, or a security policy — packaging hygiene is scoped to the items the brief lists.",
+      "Adding semantic-release, release-please, or changesets automation — the task asks for a coherent 0.2.1 release, not a release pipeline.",
+      "Auditing downstream consumers of elenwatch's public API for behavioral drift — this is a patch; documented exports keep their signatures.",
+      "Adding a public APM-cooperation hook (a 'peel me first' marker API for dd-trace/newrelic) — that is a forward-looking API change, not a doc-only mitigation, and belongs in a later horizon.",
+      "Implementing a content-length precheck on the http/https path to avoid the getHeader lie — the brief only flags the lie as a latent correctness trap for future code.",
+      "Splitting the @ai-sdk/anthropic deep import into a proper SDK adapter — unrelated to the providers-filter and packaging fixes.",
+      "Adding per-host capture rules, regex anchoring enforcement, or a TypeScript-level type for the providers filter — the brief asks for the existing filter to be respected, not extended.",
+      "Switching to a different HTTP body-capture library — the brief calls for the existing in-house tee to be made correct, not replaced.",
+      "Adding a `.github/workflows/ci.yml` GitHub Actions workflow — deferred to the next horizon per the explicit cut at Stage 3.4.",
+      "Documenting the 0.2.1 release in README.md and CHANGELOG.md (Limitations on APM stacking, Configuration docs for maxBodyBytes, pnpm-managed note, Keep-a-Changelog entry) — deferred to the next horizon per the explicit cut at Stage 3.4.",
+      "Emitting a warning log line on restore() when the current prototype.write/end does not equal the captured wrappers — deferred to a later horizon."
+    ],
+    "domainShape": "technical",
+    "domainShapeReason": "Library-internals plumbing (HTTP interceptor correctness, body-buffering bounds, packaging metadata) with no business domain vocabulary; the DDD bounded-context toolkit would only add ceremony.",
+    "ubiquitousLanguage": [
+      {"term": "interceptor", "meaning": "the module that wraps global fetch (via undici's WrappingDispatcher) and patches http/https to capture LLM provider traffic"},
+      {"term": "dispatcher", "meaning": "the undici-side surface where WrappingDispatcher.dispatch() is the entry point that currently ignores the providers filter"},
+      {"term": "providers-filter", "meaning": "the user-supplied regex array on ElenwatchOptions that names which hosts are subject to capture; honored on http/https today, ignored on fetch"},
+      {"term": "synthetic-request", "meaning": "the fake http.ClientRequest object built inside the fetch path so attachCapture can share code with the http patch path"},
+      {"term": "body-capture", "meaning": "the in-memory tee of request and response bodies that powers token estimation and structured logging"},
+      {"term": "patch-stacking", "meaning": "the layering of http/https write/end wrappers when another tool (dd-trace, newrelic) wraps them after elenwatch's install()"},
+      {"term": "maxBodyBytes", "meaning": "the new configurable byte cap on buffered request and response bodies; defense-in-depth on top of the providers filter"},
+      {"term": "tarball", "meaning": "the npm publish artifact produced by `npm pack`; currently ships the test-only sdk-fetch-shim and a duplicate package-lock.json"}
+    ]
+  },
+  "discoveryFindings": [
+    {
+      "area": "CRITICAL: providers-filter ignored on fetch/undici path",
+      "finding": "Confirmed at packages/elenwatch/src/interceptor.ts:267. The call site reads `this.interceptor.attachCapture(syntheticReq as unknown as ClientRequest, callerTrace)` and is unconditional — the surrounding dispatch() method never invokes shouldCapture(syntheticReq, this.interceptors.providers) before attaching. The http-patch path in the same file does check at lines 833 (onWrapper), 854 (writeWrapper), and 882 (endWrapper). The kNoCapture tag for the fetch path is never used today.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/elenwatch/src/interceptor.ts",
+      "implication": "The fix must (a) run shouldCapture(syntheticReq, this.providers) before attachCapture and (b) short-circuit — i.e. skip attachCapture AND skip the body-teeing branch at lines 286-398 entirely — when shouldCapture returns false. A new local `let shouldAttach = shouldCapture(syntheticReq, this.providers)` followed by an `if (!shouldAttach) { return this.original.dispatch(options, handler); }` early-return is the clean shape; the negative test must assert zero entries AND zero buffer allocation in the WrappingDispatcher's capture branch."
+    },
+    {
+      "area": "Streamed request-body race (line correction)",
+      "finding": "The brief's cited range src/interceptor.ts:280-298 covers the COMMENT that documents the race plus the synchronous-body branches. The actual race-prone AsyncIterable teeing code lives at lines 302-396, specifically the second `void (async () => { ... })()` at lines 385-396.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/elenwatch/src/interceptor.ts",
+      "implication": "Cite the 302-396 range, not 280-298. A 'deterministic wait' means: in the capture branch (lines 385-396), instead of a fire-and-forget, the capture branch must `await` upstream completion BEFORE calling `this.original.dispatch(options, wrappedHandler)` — i.e. flip the order: capture-body first, dispatch second."
+    },
+    {
+      "area": "Synthetic getHeader bug",
+      "finding": "Confirmed at packages/elenwatch/src/interceptor.ts:258-260. The implementation is `headersLower.get(name.toLowerCase()) ?? hostHeader`. hostHeader is bound at line 244 from `headerMap.host ?? originUrl.host`.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/elenwatch/src/interceptor.ts",
+      "implication": "Fix must return `undefined` for absent keys. For the special-case `host` key, fall back to hostHeader. A header-correctness test must assert that for an absent `content-length`, `getHeader('content-length')` returns `undefined`, and that `getHeader('host')` still works for a missing `host` header."
+    },
+    {
+      "area": "maxBodyBytes configurable cap (Logger seam question)",
+      "finding": "Logger.ts defines `export type Logger = (entry: LlmLogEntry) => void` — the seam accepts only LlmLogEntry, with no separate 'body dropped' event channel. options.ts has no maxBodyBytes field on InterceptorOptions. The capture state struct on interceptor.ts:95-118 has requestBodyChunks / responseBodyChunks arrays with no byte accounting.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/elenwatch/src/logger.ts",
+      "implication": "Three decisions: (1) The cap needs a parallel optional callback. (2) Default ~10 MiB. (3) The cap must apply at the appendChunk boundary for both request and response, AND must short-circuit further capture once tripped. The capture-state struct needs a per-direction `bytesCaptured: number` and `bodyDropped: boolean`."
+    },
+    {
+      "area": "options.ts has no maxBodyBytes today",
+      "finding": "Verified: options.ts (full file read, 122 lines) — InterceptorOptions has providers, capturePayloads, logger, tokenCounter, providerParser, redaction, requestTransform, responseTransform. No maxBodyBytes.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/elenwatch/src/options.ts",
+      "implication": "Add maxBodyBytes?: number and onBodyDropped to InterceptorOptions and document them in the docstring. Plumb maxBodyBytes through the Interceptor constructor (interceptor.ts:683-692)."
+    },
+    {
+      "area": "Negative fetch test missing (with line-accurate proof)",
+      "finding": "Confirmed: packages/elenwatch/src/interceptor.test.ts contains no negative test that fetches a non-provider host. Every test that exercises fetch/undici sets `providers: ['127.0.0.1']` or matches by 127.0.0.1.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/elenwatch/src/interceptor.test.ts",
+      "implication": "Add a new test in interceptor.test.ts (NOT in the integration file — keep it unit-level so it runs in the default `npm test`) with `providers: [/api\\.openai\\.com/]`."
+    },
+    {
+      "area": "APM patch-stacking documentation (deferred to next horizon)",
+      "finding": "README.md is 33 lines and contains no restore() caveat, no APM stacking note, no mention of dd-trace/newrelic.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/elenwatch/README.md",
+      "implication": "Deferred to next horizon — see Planning Brief."
+    },
+    {
+      "area": "Packaging hygiene: package.json metadata",
+      "finding": "packages/elenwatch/package.json has name, version (0.2.0), description, author, license, keywords, main, module, types, exports, files, sideEffects, engines, scripts, devDependencies, peerDependencies, peerDependenciesMeta, jest. There is NO `repository`, NO `bugs`, NO `homepage`, NO `packageManager`. Both lockfiles are present.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/elenwatch/package.json",
+      "implication": "Add `repository` (type=git, url from git remote), `bugs` ({url, email}), `homepage` (README.md url on the default branch), and `packageManager: 'pnpm@<version>'`."
+    },
+    {
+      "area": "Packaging hygiene: VERSION drift",
+      "finding": "packages/elenwatch/src/index.ts:33 reads `export const VERSION = '0.2.0';`. No build step synthesizes VERSION from package.json.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/elenwatch/src/index.ts",
+      "implication": "Add a `prebuild` step that reads package.json and writes a generated `src/version.ts`; src/index.ts re-exports `VERSION` from `./version`."
+    },
+    {
+      "area": "Packaging hygiene: sdk-fetch-shim ships in tarball",
+      "finding": "packages/elenwatch/src/sdk-fetch-shim.ts exists. It is NOT re-exported from src/index.ts. It DOES compile to dist and its .d.ts references @ai-sdk/anthropic.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/elenwatch/src/sdk-fetch-shim.ts",
+      "implication": "Add sdk-fetch-shim.ts to the test tsconfig exclusion. The @ai-sdk/anthropic deep-import type problem disappears because the .d.ts is no longer in the tarball."
+    },
+    {
+      "area": "Packaging hygiene: exports types points at CJS .d.ts",
+      "finding": "packages/elenwatch/package.json line 20 reads `\"types\": \"./dist/cjs/index.d.ts\"` (top-level) and line 23 (inside exports['.']) reads `\"types\": \"./dist/cjs/index.d.ts\"` as well. Both dist/cjs/index.d.ts and dist/esm/index.d.ts exist.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/elenwatch/package.json",
+      "implication": "Fix: split exports['.'].types per ESM/CJS."
+    },
+    {
+      "area": "Packaging hygiene: unused eslint-disable directives (verification needed)",
+      "finding": "Confirmed: packages/elenwatch/src/otel.ts:38 and otel.test.ts:101 each have a dual-rule directive. eslint.config.mjs uses tseslint.configs.recommendedTypeChecked — type-aware rules.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/elenwatch/eslint.config.mjs",
+      "implication": "The directives MAY be load-bearing under the type-aware rule set. Verify by removing one at a time and re-running lint. Keep if lint fails."
+    },
+    {
+      "area": "No CI config in repo (deferred to next horizon)",
+      "finding": "Confirmed: no .github directory exists at the repo root.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/.git",
+      "implication": "Deferred to next horizon — see Planning Brief."
+    },
+    {
+      "area": "No CHANGELOG (deferred to next horizon)",
+      "finding": "Confirmed: no CHANGELOG.md at packages/elenwatch/ or repo root.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/elenwatch/",
+      "implication": "Deferred to next horizon — see Planning Brief."
+    },
+    {
+      "area": "Test infrastructure (Jest, not Vitest)",
+      "finding": "The actual test runner is Jest 29.7.0, not Vitest.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/elenwatch/package.json",
+      "implication": "Use Jest globals jest.fn()/describe/test. The negative-test approach is identical."
+    },
+    {
+      "area": "Logger seam does not support 'body dropped' structured lines",
+      "finding": "Logger.ts (full file read, 37 lines) defines Logger as `(entry: LlmLogEntry) => void`. There is no second argument, no level field, no separate 'body dropped' event type.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/elenwatch/src/logger.ts",
+      "implication": "Pick a parallel `onBodyDropped` callback separate from logger. Keep the Logger seam clean."
+    },
+    {
+      "area": "README does not document restore() semantics (deferred)",
+      "finding": "README.md (33 lines) shows install()/restore() in 2 lines. No caveats, no APM note.",
+      "filePath": "/Users/dimitrykatz/workspace/elenwatch/packages/elenwatch/README.md",
+      "implication": "Deferred to next horizon — see Planning Brief."
+    }
+  ],
+  "requiredMaterials": [
+    {
+      "name": "pnpm version currently installed locally",
+      "kind": "knowledge",
+      "whyNeeded": "The package.json `packageManager` field (added in phase 4) must pin a specific pnpm version for corepack determinism.",
+      "acquisitionNote": "Run `pnpm --version` inside /Users/dimitrykatz/workspace/elenwatch/packages/elenwatch/ and pin the exact version (e.g. `pnpm@9.12.3`) in package.json."
+    },
+    {
+      "name": "Git remote URL of the repository",
+      "kind": "knowledge",
+      "whyNeeded": "The packaging-hygiene phase adds `repository`, `bugs`, `homepage` fields to package.json (currently absent).",
+      "acquisitionNote": "Run `git -C /Users/dimitrykatz/workspace/elenwatch remote -v` and use the fetch URL."
+    },
+    {
+      "name": "Current `engines.node` value in packages/elenwatch/package.json",
+      "kind": "knowledge",
+      "whyNeeded": "The pinned pnpm version must be compatible with the Node.js range declared under `engines.node`.",
+      "acquisitionNote": "Read the `engines` block of packages/elenwatch/package.json."
+    },
+    {
+      "name": "Current `include`/`exclude` patterns in tsconfig.cjs.json and tsconfig.esm.json",
+      "kind": "knowledge",
+      "whyNeeded": "The sdk-fetch-shim removal in phase 5 relies on excluding `src/sdk-fetch-shim.ts` from both tsconfigs.",
+      "acquisitionNote": "Read packages/elenwatch/tsconfig.cjs.json and tsconfig.esm.json; cross-check that `src/sdk-fetch-shim.ts` is in `include`."
+    },
+    {
+      "name": "All references to `@ai-sdk/anthropic` across src/ and tests",
+      "kind": "knowledge",
+      "whyNeeded": "Confirm test-time resolution of @ai-sdk/anthropic after the shim is excluded from dist.",
+      "acquisitionNote": "Run `grep -rn '@ai-sdk/anthropic' /Users/dimitrykatz/workspace/elenwatch/packages/elenwatch/src/`."
+    },
+    {
+      "name": "arethetypeswrong CLI availability",
+      "kind": "tool",
+      "whyNeeded": "The phase-4 rubric requires verifying `arethetypeswrong` no longer flags the .d.ts types condition.",
+      "acquisitionNote": "Run `npx --no-install arethetypeswrong --help` inside packages/elenwatch/ to detect an existing install."
+    }
+  ],
+  "phases": [
+    {
+      "id": "add-providers-filter-guard-fetch-path",
+      "order": 0,
+      "name": "Add providers-filter guard on fetch path",
+      "goal": "Make the fetch/undici code path honor the user-supplied providers filter the same way the http/https patch path already does, so that requests to non-provider hosts never enter the capture pipeline.",
+      "rationale": "The fetch dispatch entry at packages/elenwatch/src/interceptor.ts:267 calls attachCapture unconditionally. The http/https patch path checks shouldCapture and tags with kNoCapture when it returns false. The fetch path never calls shouldCapture, so the providers filter is silently bypassed for every fetch call. This is the critical fix — without it, every fetch() in the host process leaks to the logger and pins memory on responseBodyChunks.",
+      "filesAffected": ["packages/elenwatch/src/interceptor.ts", "packages/elenwatch/src/interceptor.test.ts"],
+      "changes": [
+        "Compute `const shouldAttach = shouldCapture(syntheticReq, this.providers)` immediately before the existing `this.interceptor.attachCapture(...)` call at interceptor.ts:267.",
+        "Add an early-return `if (!shouldAttach) { return this.original.dispatch(options, handler); }` so the body-teeing branch at lines 286-398 is also skipped for non-provider hosts — no capture-state struct allocated, no body buffer held.",
+        "Add a negative fetch test in interceptor.test.ts (NOT in the integration file, so it runs in the default Jest suite) with `providers: [/api\\\\.openai\\\\.com/]` that fetches a 127.0.0.1 test server, flushes with setImmediate, and asserts (a) no LlmLogEntry is passed to logger and (b) no `responseBodyChunks` buffer exists on the capture-state struct."
+      ],
+      "boundedContext": "HTTP capture (interceptor)",
+      "layer": "infrastructure",
+      "blastRadius": "medium",
+      "inputs": [
+        "packages/elenwatch/src/interceptor.ts dispatch entry around line 267",
+        "shouldCapture helper and kNoCapture tag mechanism used by the http/https path",
+        "capture-state struct on interceptor.ts:95-118",
+        "withEntries helper and providers-regex patterns in interceptor.test.ts"
+      ],
+      "expectedResult": "fetch path skips capture for non-provider hosts; negative fetch test passes asserting zero log entries and zero captured body buffer",
+      "dependsOn": [],
+      "rubric": [
+        {
+          "id": "dispatcher-applies-providers-filter",
+          "label": "Fetch dispatcher applies the providers filter before any capture work",
+          "ruleStatement": "The undici WrappingDispatcher entry in packages/elenwatch/src/interceptor.ts must call the same shouldCapture helper the http/https patch path uses and short-circuit to this.original.dispatch when it returns false. A 10 means the guard sits at the dispatcher entry (not inside a nested branch), uses `const shouldAttach = shouldCapture(syntheticReq, this.providers)`, and the `if (!shouldAttach) return this.original.dispatch(options, handler)` runs BEFORE the existing this.interceptor.attachCapture(...) call AND BEFORE any capture-state allocation. A 9 is a working guard that inlines a regex test instead of calling shouldCapture (drift risk between http and fetch paths). minScore 8 is the bar for ACCEPTABLE.",
+          "passCriteria": [
+            "interceptor.ts contains a line that calls `shouldCapture(syntheticReq, this.providers)` immediately above the existing attachCapture call site — grep `shouldCapture(syntheticReq` in the file returns exactly one hit inside the dispatch function",
+            "An early-return `if (!shouldAttach) { return this.original.dispatch(options, handler); }` (or textually equivalent) appears BEFORE the `this.interceptor.attachCapture(...)` call so no capture-state struct is built for non-provider hosts",
+            "shouldCapture is imported from the same module the http/https patch path uses — no second definition of the predicate appears in interceptor.ts",
+            "No new regex literal such as `/api\\.openai\\.com/` appears in src/interceptor.ts; host matching stays centralized in the shared helper"
+          ],
+          "failureExamples": [
+            "Dev put the shouldCapture check INSIDE the body-teeing branch instead of above it — non-provider requests still allocate the capture-state struct and start streaming before the skip is computed, which is the exact memory-pin leak the rationale calls out.",
+            "Dev computed shouldAttach but forgot the early return and instead passed a skip flag into attachCapture — the no-LlmLogEntry assertion passes, but every non-provider fetch still builds a capture-state struct and an empty responseBodyChunks array.",
+            "Dev inlined `this.providers.some(p =&gt; p.test(host))` on the fetch path instead of calling shouldCapture, so a regex the http path rejects is now accepted by fetch and the two paths silently diverge.",
+            "Dev inverted the predicate — the negative test passes by accident, but real provider-host fetches now skip capture and the positive test breaks."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "no-capture-state-on-skipped-host",
+          "label": "No capture-state struct or body buffer is allocated when the filter rejects",
+          "ruleStatement": "When shouldAttach is false, the dispatcher must return original.dispatch WITHOUT building the capture-state struct, allocating responseBodyChunks, or otherwise holding any per-request buffer. A 10 means a developer can read the fetch dispatch function top-down and see zero allocations on the skip path AND the negative test asserts this directly (no logger call AND no responseBodyChunks buffer). minScore 8.",
+          "passCriteria": [
+            "In the dispatcher function, the `if (!shouldAttach) return this.original.dispatch(...)` is reached BEFORE any reference to the capture-state object, requestBodyChunks, or responseBodyChunks fields",
+            "The negative fetch test asserts BOTH that the logger received zero LlmLogEntry AND that no responseBodyChunks buffer exists on any state object",
+            "Running the negative test against the interceptor shows no observable per-skipped-request allocation"
+          ],
+          "failureExamples": [
+            "Dev wrote `this.interceptor.attachCapture(syntheticReq, ..., { skip: true })` instead of an early return — capture-state is built, responseBodyChunks is initialized to [], and only the log emission is suppressed.",
+            "Dev placed `if (!shouldAttach) return` AFTER `const state = this.captureStates.get(syntheticReq)` — the map entry is created on the hot path of every non-provider fetch and only cleaned up later.",
+            "Dev's negative test only asserts `expect(logger).not.toHaveBeenCalled()` but never checks the capture-state struct."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "negative-fetch-test-in-default-suite",
+          "label": "Negative fetch test exists in interceptor.test.ts and runs in the default Jest suite",
+          "ruleStatement": "The caller-supplied acceptance criterion requires the missing negative fetch test (non-provider host emits nothing via fetch) to exist. A 10 means the test lives in packages/elenwatch/src/interceptor.test.ts (NOT in the integration file), runs in the default `npm test` invocation, uses `providers: [/api\\.openai\\.com/]` (escaped dot), fetches a 127.0.0.1 test server, flushes with `await new Promise(setImmediate)`, and asserts BOTH (a) the logger received zero LlmLogEntry and (b) no responseBodyChunks buffer exists. minScore 8.",
+          "passCriteria": [
+            "packages/elenwatch/src/interceptor.test.ts contains a `test('...', ...)` whose name includes both `fetch` and (negative or non-provider or filter or skip or not capture)",
+            "The test passes a `providers: [/api\\.openai\\.com/]` into the interceptor constructor (regex matches api.openai.com only)",
+            "The test issues a fetch against a `127.0.0.1` URL and awaits `new Promise(setImmediate)` before asserting",
+            "The test contains BOTH an assertion that the logger received zero calls AND an explicit check that no responseBodyChunks buffer exists",
+            "Running `npx jest packages/elenwatch/src/interceptor.test.ts` (default project) executes this test"
+          ],
+          "failureExamples": [
+            "Dev put the test in the integration test file that requires a special env flag — it never runs in the default `npm test` and the leak ships.",
+            "Dev's test only asserts no logger call but forgets to assert no responseBodyChunks buffer.",
+            "Dev's test fetches `api.openai.com` literally without stubbing DNS.",
+            "Dev's providers regex `/api.openai.com/` (missing the backslash before the dot) is too permissive."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "positive-fetch-still-captures",
+          "label": "A provider-host fetch still produces an LlmLogEntry through the fetch path",
+          "ruleStatement": "The guard must not over-fire. A 10 means a positive fetch test exists (existing or newly added) that hits a host matching the providers regex, flushes with setImmediate, and asserts the logger received at least one LlmLogEntry. minScore 8.",
+          "passCriteria": [
+            "Either an existing positive fetch test in interceptor.test.ts still passes unchanged OR a new positive fetch test is added that fetches a host the providers regex covers",
+            "The test flushes with `await new Promise(setImmediate)` before asserting",
+            "The test asserts `expect(logger).toHaveBeenCalled()` AND verifies the LlmLogEntry has the expected URL or response body",
+            "`npm test` reports 0 failures on the positive test after the guard change"
+          ],
+          "failureExamples": [
+            "Dev inverted the predicate so provider hosts are skipped and non-provider hosts are captured.",
+            "Dev's shouldCapture call accidentally uses the response URL instead of the request URL.",
+            "Dev's positive test passes because the test server's host string happens to also match the negative regex."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "test-typecheck-lint-stay-green",
+          "label": "Existing test, typecheck, and lint pipelines stay green across the horizon",
+          "ruleStatement": "The caller-supplied criterion requires existing test/typecheck/lint stay green throughout the horizon. A 10 means `npm run typecheck`, `npm run lint`, and `npm test` (default Jest project) all exit 0 with no new warnings, no `.skip`s, no `@ts-ignore`s, no `eslint-disable` lines introduced by this phase. minScore 8.",
+          "passCriteria": [
+            "`npm run typecheck` exits 0 with no new diagnostics in interceptor.ts or interceptor.test.ts",
+            "`npm run lint` exits 0 with no new rule violations in interceptor.ts or interceptor.test.ts",
+            "`npm test` (default Jest project) reports 0 failing tests and 0 new skipped/todo'd tests",
+            "`git diff -- interceptor.ts interceptor.test.ts` shows no `// @ts-ignore`, no `// @ts-expect-error`, no `// eslint-disable`, no `it.skip`, no `xit`, no `test.todo` introduced by this phase"
+          ],
+          "failureExamples": [
+            "Dev added `// @ts-ignore` above the shouldCapture call to silence a type widening the dev didn't understand.",
+            "Dev marked the positive test as `it.skip` with a TODO comment because their predicate was inverted.",
+            "Dev changed the signature of shouldCapture to accept `string | RegExp` and broke every existing http/https call site; typecheck fails but the dev silenced it with a single `// @ts-expect-error`."
+          ],
+          "minScore": 8
+        }
+      ],
+      "healerHint": "The dev adds the shouldCapture check but forgets the early return, so capture-state and responseBodyChunks are still allocated before the skip fires — fix by computing shouldAttach and `return this.original.dispatch(...)` BEFORE any capture-state allocation, and add an explicit `expect(state).not.toHaveProperty('responseBodyChunks')` assertion to the negative test so the memory half of the leak is checked, not just the log half."
+    },
+    {
+      "id": "fix-synthetic-getheader-lie",
+      "order": 1,
+      "name": "Change synthetic getHeader to return undefined when absent",
+      "goal": "Make the synthetic getHeader return undefined for any header key that is not present in the underlying header map, while preserving the host fallback for the `host` key only.",
+      "rationale": "The current implementation at interceptor.ts:258-260 falls back to hostHeader for any missing key, so a request that has no `content-length` silently returns a host-looking string instead of undefined. Today only `host` is read inside this file (deriveUrl at line 1489 and reqHostname at line 1446), so the lie is invisible — but any future reader gets garbage data. This is a latent correctness trap for headers elenwatch itself does not currently read but that downstream consumers may add.",
+      "filesAffected": ["packages/elenwatch/src/interceptor.ts", "packages/elenwatch/src/interceptor.test.ts"],
+      "changes": [
+        "Replace the fallback expression `headersLower.get(name.toLowerCase()) ?? hostHeader` at interceptor.ts:258-260 with `const v = headersLower.get(name.toLowerCase()); return v !== undefined ? v : (name.toLowerCase() === 'host' ? hostHeader : undefined);`.",
+        "Verify the only in-file consumers (deriveUrl and reqHostname, both reading `host`) still see the correct value by code inspection.",
+        "Add a header-correctness test that builds a synthetic request with no content-length header and asserts `getHeader('content-length')` returns `undefined`, then asserts `getHeader('host')` still returns the canonical hostHeader when the `host` header is missing from the input headers."
+      ],
+      "boundedContext": "HTTP capture (interceptor)",
+      "layer": "infrastructure",
+      "blastRadius": "small",
+      "inputs": [
+        "packages/elenwatch/src/interceptor.ts synthetic-request construction at lines 244-267",
+        "hostHeader binding at line 244 and headersLower map construction at line 245",
+        "deriveUrl consumer at line 1489-1492 and reqHostname consumer at line 1446-1451",
+        "existing test patterns that build a synthetic request"
+      ],
+      "expectedResult": "synthetic getHeader returns undefined for absent non-host keys and hostHeader only for the `host` key; header-correctness test passes",
+      "dependsOn": [],
+      "rubric": [
+        {
+          "id": "header-correctness-implementation",
+          "label": "synthetic getHeader returns undefined for absent non-host keys",
+          "ruleStatement": "The synthetic getHeader at packages/elenwatch/src/interceptor.ts MUST return exactly `undefined` when the requested header key is absent from the input header map AND is not the lowercase string `host`. A score of 10 means a reviewer reading the synthetic-request block cannot point to any code path where a missing non-host header returns a non-undefined value (including `null`, `''`, or a host-looking fallback). minScore 7.",
+          "passCriteria": [
+            "Open packages/elenwatch/src/interceptor.ts and locate the synthetic-request construction. The `getHeader` method on the fake request object returns `undefined` for a key like `'content-length'` when no `content-length` entry exists.",
+            "Grep the synthetic-request block for the token `hostHeader`. The only reference as a return-value fallback inside `getHeader` is guarded by a check that the requested key, lowercased, equals `'host'`.",
+            "Reading the diff for this phase, the `getHeader` body for the absent-non-host case contains exactly the literal `undefined` (or an equivalent early-return branch)."
+          ],
+          "failureExamples": [
+            "Dev rewrites the line as `return headersLower.get(name.toLowerCase()) ?? (name.toLowerCase() === 'host' ? hostHeader : '')` — they preserved the host case but still return `''` for everything else instead of `undefined`.",
+            "Dev adds `if (name.toLowerCase() === 'host') return hostHeader; return undefined;` but leaves the original `?? hostHeader` line above it, so absent non-host keys still resolve to hostHeader.",
+            "Dev narrows the fallback only when `hostHeader` is truthy (`?? (hostHeader || undefined)`), which silently returns `''` for `host` when there's no hostHeader binding."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "host-fallback-preservation",
+          "label": "host key still resolves to hostHeader when input headers lack a host entry",
+          "ruleStatement": "deriveUrl (around line 1489) and reqHostname (around line 1446) rely on the synthetic getHeader falling back to hostHeader when the caller did not pass an explicit `host` header; that fallback MUST remain intact for the lowercase `host` key only. minScore 7.",
+          "passCriteria": [
+            "Confirm the two call sites for `getHeader('host')` (around lines 1446 and 1489) are still present and unchanged in this phase's diff.",
+            "Construct a synthetic request whose input headers map has no `host` key; verify `getHeader('host')` returns the hostHeader string.",
+            "Dual case: input headers map has an explicit `host` entry. `getHeader('host')` returns that explicit value, not the synthetic hostHeader."
+          ],
+          "failureExamples": [
+            "Dev removes the host fallback entirely on the grounds that 'it was the source of the lie.' Now deriveUrl and reqHostname receive `undefined` for the host when callers omit it.",
+            "Dev keeps the host fallback but only against an exact-string match `name === 'host'` and forgets `name.toLowerCase()`. A caller passing `getHeader('Host')` (capital H) gets `undefined`.",
+            "Dev makes the fallback fire for `host` AND for any key whose lowercase form happens to collide with `host` due to a typo."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "header-correctness-test-existence",
+          "label": "A header-correctness test exists with both positive and negative assertions",
+          "ruleStatement": "The caller-supplied acceptance criterion states the header-correctness test must exist. The test MUST exercise BOTH the new undefined-return contract for a non-host absent key AND the preserved host fallback, and it MUST run against the synthetic-request construction. minScore 7.",
+          "passCriteria": [
+            "Open packages/elenwatch/src/interceptor.test.ts and locate a test whose name mentions `getHeader`, `header`, or `synthetic` and that exercises the synthetic-request construction.",
+            "That test contains an assertion `expect(synthetic.getHeader('content-length')).toBe(undefined)` for a synthetic request built without a `content-length` header in its input map.",
+            "That same test asserts `getHeader('host')` returns the hostHeader string when the input headers map has no `host` entry, AND returns the explicit header value when the input headers map DOES have a `host` entry."
+          ],
+          "failureExamples": [
+            "Dev writes only the negative assertion and skips the host-positive case. The regression that breaks the host fallback would not be caught by CI.",
+            "Dev picks a non-host negative key whose lowercase form accidentally equals `host` after a typo (e.g. `getHeader('Hose')`).",
+            "Dev puts both assertions in one `it()` block but reuses a single synthetic-request builder whose input map is mutated between assertions."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "regression-safety",
+          "label": "existing test suite, typecheck, and lint stay green",
+          "ruleStatement": "A score of 10 means running the project's test, typecheck, and lint commands against packages/elenwatch all exit 0 with the full pre-existing suite still in place (no skipped or `.skip`-ed tests, no `// @ts-ignore` additions, no new `eslint-disable` comments inside the synthetic-request block). minScore 7.",
+          "passCriteria": [
+            "Run `npm test` (or the workspace command equivalent) and confirm the full pre-existing test count is unchanged.",
+            "Run `tsc --noEmit` (or `npm run typecheck`) and confirm zero new diagnostics attributable to the changed lines.",
+            "Run `npm run lint` and confirm zero new warnings or errors in the files changed by this phase."
+          ],
+          "failureExamples": [
+            "Dev writes `return v !== undefined ? v : (name.toLowerCase() === 'host' ? hostHeader : undefined as any);` — the `as any` silences the typechecker but a `no-any` lint rule rejects it.",
+            "A pre-existing test that constructs a synthetic request with unusual header casing starts failing because the developer incidentally changed the map construction.",
+            "Dev marks a flaky pre-existing test as `.skip` to get the suite green."
+          ],
+          "minScore": 7
+        }
+      ],
+      "healerHint": "If `getHeader('host')` returns `undefined` instead of hostHeader after the fix, the developer almost certainly dropped the host-only branch when refactoring — re-add the guarded `name.toLowerCase() === 'host' ? hostHeader : undefined` ternary and the host-fallback test will pass."
+    },
+    {
+      "id": "fix-streamed-request-body-race",
+      "order": 2,
+      "name": "Change request-body capture to await upstream completion",
+      "goal": "Make the streamed (AsyncIterable) request-body capture deterministic so the response handler's onComplete cannot fire before the full request body has been captured and emitted into the capture entry.",
+      "rationale": "The race-prone fire-and-forget at interceptor.ts:385-396 lets the dispatch call return and trigger onComplete while the capture branch is still mid-await on the shared waiter queue. The result is capture entries with partial or empty request bodies. The fix reorders capture-body-first then dispatch-second so onComplete cannot fire until capture is fully complete. Discovery found the actual race site is lines 302-396 (not 280-298 as the brief said).",
+      "filesAffected": ["packages/elenwatch/src/interceptor.ts", "packages/elenwatch/src/interceptor.test.ts"],
+      "changes": [
+        "Refactor the AsyncIterable teeing block at interceptor.ts:302-396 so the capture promise is awaited BEFORE `this.original.dispatch(options, wrappedHandler)` is called.",
+        "Adapt the dispatch return type so callers (and the onComplete path) only fire after both capture and the original dispatch have settled.",
+        "Add a deterministic test fixture using a transform stream that releases exactly one chunk per microtask (so the upstream never completes synchronously), upload a multi-chunk body through fetch, and assert (a) the captured request body in the emitted LlmLogEntry equals the full uploaded body and (b) the capture emission ordering is deterministic by code inspection or by intercepting dispatch with a spy."
+      ],
+      "boundedContext": "HTTP capture (interceptor)",
+      "layer": "infrastructure",
+      "blastRadius": "medium",
+      "inputs": [
+        "packages/elenwatch/src/interceptor.ts AsyncIterable teeing code at lines 302-396",
+        "packages/elenwatch/src/interceptor.ts onComplete handler in the dispatch wrapper at lines 440-445",
+        "capture-state struct fields capturedEnd and finished at interceptor.ts:95-118",
+        "withEntries helper and the existing transform-stream pattern in interceptor.test.ts"
+      ],
+      "expectedResult": "streamed request-body capture completes before dispatch returns; race test passes asserting the captured body equals the full uploaded body",
+      "dependsOn": [],
+      "rubric": [
+        {
+          "id": "capture-before-dispatch-in-source",
+          "label": "Capture completes before dispatch returns (source-level)",
+          "ruleStatement": "In packages/elenwatch/src/interceptor.ts every AsyncIterable body-capture branch must `await` the body-capture-completing promise in the same async frame as the call to `this.original?.dispatch(...)`. Sequencing must NOT rely on `setTimeout`, `setImmediate`, `queueMicrotask`, `Promise.resolve().then`, or any `sleep`-style yield between the capture-await and the dispatch call. Scale: 10 = a reviewer cannot find a single code path where onComplete can fire while capture is still pending; 8 = the one AsyncIterable branch is correctly sequenced and the sync non-iterable path is untouched; minScore 7.",
+          "passCriteria": [
+            "Run `grep -nE 'this\\.original(\\?|\\b)\\.dispatch\\(' packages/elenwatch/src/interceptor.ts` and for every call site reached from the AsyncIterable teeing block, confirm an `await` on the capture-completing promise appears earlier in the same enclosing `async` function.",
+            "Run `grep -nE 'setTimeout|setImmediate|queueMicrotask|Promise\\.resolve\\(\\)\\.then|process\\.nextTick' packages/elenwatch/src/interceptor.ts` inside the body-capture / dispatch wrapper and confirm zero matches used to defer dispatch for sequencing reasons.",
+            "Inspect the `capture-state` struct (`capturedEnd`, `finished` fields) and confirm the promise that resolves the await is the one whose resolve is called only after the AsyncIterable has been fully drained.",
+            "Confirm the synchronous fast path for non-Iterable / non-streaming bodies still bypasses the teeing block."
+          ],
+          "failureExamples": [
+            "Dev writes `await captureDone; this.original?.dispatch(opts, wrappedHandler);` correctly for the happy path, but in the `catch` arm of the teeing block calls dispatch synchronously — the upstream error path now bypasses capture-finalization.",
+            "Dev awaits the capture promise but then wraps dispatch in `Promise.resolve().then(() => dispatch(...))` — dispatch is now scheduled on a later microtask and onComplete can win the race.",
+            "Dev inserts `await new Promise(r => setImmediate(r))` between capture-await and dispatch to 'give the upstream room' — looks like it works, is timing-based, and will flake under load."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "deterministic-race-test",
+          "label": "Deterministic (non-timing) race/concurrency test for the streamed body",
+          "ruleStatement": "A new test in packages/elenwatch/src/interceptor.test.ts must prove the fix without `sleep`, `setTimeout`, `setImmediate`, fake timers, or repeated polls. Scale: 10 = hermetic test, asserts both data integrity AND ordering invariant, runs in well under 100 ms with zero timers; 8 = non-timing test that asserts body equality and an ordering check; minScore 7.",
+          "passCriteria": [
+            "Open packages/elenwatch/src/interceptor.test.ts and find the new test whose description contains one of: `race`, `deterministic`, `streamed`, `chunk`, `capture-before-dispatch`.",
+            "The test constructs the body via a `ReadableStream` or `Transform` whose `pull`/`transform` returns a Promise that resolves on the next microtask.",
+            "The test uploads a body of at least 3 distinct chunks of known bytes and the assertion compares `entry.requestBody` byte-for-byte to the source using `Buffer.equals` or a stringified JSON equality.",
+            "The test proves ordering either by reading the wrapper source and asserting the await precedes `dispatch`, or by intercepting `this.original.dispatch` with a spy that records the moment the capture `Promise` resolves.",
+            "The test passes locally on a cold run with `pnpm test` and is included in CI."
+          ],
+          "failureExamples": [
+            "Dev uploads the body, then `await new Promise(r => setTimeout(r, 50))`, then asserts `entry.requestBody` equals the source — timing-based, will flake.",
+            "Dev uses `Readable.from([buf])` to feed the body — that source completes synchronously and the old race-prone code happens to capture the whole body, so the test passes vacuously.",
+            "Dev asserts `expect(entry.requestBody).toBeTruthy()` or `.length > 0` instead of byte-equality."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "positive-and-negative-coverage",
+          "label": "Real positive AND negative test cases",
+          "ruleStatement": "The fix must land with both a positive test (a multi-chunk request body is captured fully) and at least one negative test that fails against the old, race-prone implementation. Scale: 10 = ≥2 positive + ≥2 negative tests; 8 = one sharp positive + one sharp negative; minScore 6.",
+          "passCriteria": [
+            "At least one positive test asserts `entry.requestBody` byte-equals a multi-chunk source body of ≥3 chunks.",
+            "At least one negative test feeds a body via an `AsyncIterable`/`ReadableStream` whose iterator throws mid-stream and asserts the rejection propagates without a partial `LlmLogEntry` being emitted, OR feeds a slow upstream that would have produced a partial capture under the old code and asserts the captured body is complete.",
+            "Re-run the test suite against the previous commit's interceptor.ts and confirm the negative test fails."
+          ],
+          "failureExamples": [
+            "Dev adds only the positive test and skips the negative test.",
+            "Dev adds a negative test but the assertion is `expect(console.warn).toHaveBeenCalled()` rather than a check on the capture entry's body.",
+            "Dev writes a 'negative' test that uploads a 1-byte body — that is not a slow iterator."
+          ],
+          "minScore": 6
+        },
+        {
+          "id": "existing-checks-stay-green",
+          "label": "Existing test/typecheck/lint baseline preserved",
+          "ruleStatement": "All previously-passing tests, typecheck, and lint commands continue to pass after this phase lands. Scale: 10 = every check passes with zero new warnings; 8 = every check passes, any new warnings are pre-existing or unrelated; minScore 9.",
+          "passCriteria": [
+            "Run the repo's test command (`pnpm test` / `npm test`) and confirm zero previously-passing tests now fail; the count of passing tests must be ≥ the count before this phase.",
+            "Run `pnpm typecheck` (or `pnpm exec tsc --noEmit`) and confirm zero new type errors.",
+            "Run `pnpm lint` and confirm zero new warnings/errors.",
+            "Run `git diff main -- packages/elenwatch/src/interceptor.ts packages/elenwatch/src/interceptor.test.ts | grep -nE '@ts-ignore|@ts-expect-error|eslint-disable|\\.skip\\(|\\.todo\\(|xit\\(|xdescribe\\('` and confirm zero matches."
+          ],
+          "failureExamples": [
+            "Dev adds `// eslint-disable-next-line @typescript-eslint/no-floating-promises` to silence a new warning surfaced by the await reordering.",
+            "Dev marks a previously-passing test `it.skip` so the suite goes green.",
+            "Dev widens the dispatch wrapper's return type from `Dispatcher.DispatchResponse` to `any | Promise<Dispatcher.DispatchResponse>` to avoid a tsc error."
+          ],
+          "minScore": 9
+        },
+        {
+          "id": "dispatch-return-type-once-fired",
+          "label": "Dispatch return-type contract and single-fire onComplete",
+          "ruleStatement": "The reordering must keep the dispatch wrapper's return-type contract type-identical for existing callers AND `onComplete` must fire exactly once per request. Scale: 10 = return type unchanged, onComplete single-fire verifiable by a counter test; 8 = callers compile and onComplete fires once; minScore 7.",
+          "passCriteria": [
+            "Confirm `tsc --noEmit` passes for every file that imports or calls the interceptor's dispatch wrapper without widened signatures.",
+            "Find or add a test that installs a spy on the capture entry's `onComplete` (or counts emissions of the final entry) and asserts the count is exactly `1` per request.",
+            "Run the new race test and confirm it asserts the capture entry is fully formed BEFORE the assertion that checks dispatch-returned."
+          ],
+          "failureExamples": [
+            "Dev awaits capture inside the dispatch wrapper but the wrapper's `onComplete` callback is still wired only to the upstream handler, while the new await chain ALSO calls onComplete on resolve — capture entry gets finalized twice.",
+            "Dev makes the wrapper return `Promise<...>` where it used to return synchronously, but a call site still reads the result synchronously.",
+            "Dev's race test only checks the captured body and never inspects the dispatch-wrapper's behavior."
+          ],
+          "minScore": 7
+        }
+      ],
+      "healerHint": "The most likely failure is the dev reorders capture and dispatch into the same async frame but the new deterministic test still flakes — the fix is to drop any `setImmediate`/`queueMicrotask` hop between the await on the body-capture-completing promise and the call to `this.original?.dispatch(...)`, so the await resolves on the same microtask tick that triggers dispatch and onComplete (wired to the upstream handler) cannot fire first."
+    },
+    {
+      "id": "add-maxbodybytes-cap-and-body-dropped-event",
+      "order": 3,
+      "name": "Add maxBodyBytes cap with body-dropped event",
+      "goal": "Add a configurable byte cap on buffered request and response bodies as a defense-in-depth safety net, and emit a structured event when the cap trips.",
+      "rationale": "The current capture buffers every body chunk without bound (no byte accounting in the capture-state struct and no cap in appendChunk at lines 564-591), so a malicious or runaway provider can pin unbounded memory. The providers filter is the primary privacy boundary; maxBodyBytes is a secondary safety net. A separate `onBodyDropped` callback keeps the single-purpose Logger seam clean.",
+      "filesAffected": ["packages/elenwatch/src/options.ts", "packages/elenwatch/src/logger.ts", "packages/elenwatch/src/interceptor.ts", "packages/elenwatch/src/interceptor.test.ts"],
+      "changes": [
+        "Add `maxBodyBytes?: number` (default ~10 MiB) and `onBodyDropped?: (info: { host: string; direction: 'request' | 'response'; bytes: number; cap: number }) => void` to InterceptorOptions in options.ts and document both in the docstring at lines 78-111.",
+        "Plumb maxBodyBytes through the Interceptor constructor (interceptor.ts:683-692) into the capture-state struct; add per-direction `bytesCaptured: number` and `bodyDropped: boolean` to the capture-state struct on interceptor.ts:95-118.",
+        "Update appendChunk at interceptor.ts:564-591 to short-circuit further capture for a direction once `bytesCaptured + chunk.byteLength > maxBodyBytes`, set `bodyDropped = true`, and invoke the onBodyDropped callback exactly once with the structured info.",
+        "Emit a clear console message ('elenwatch: dropping body for host X, Y bytes exceeds maxBodyBytes Z') when the cap trips so operators can tune it.",
+        "Add a cap-trip test that uploads a request body exceeding maxBodyBytes (small cap, e.g. 256 bytes) and asserts no further body chunks are appended to requestBodyChunks AND the onBodyDropped callback is invoked exactly once with the expected info."
+      ],
+      "boundedContext": "Configuration (options + logger seam) and HTTP capture (interceptor)",
+      "layer": "application",
+      "blastRadius": "medium",
+      "inputs": [
+        "InterceptorOptions shape at packages/elenwatch/src/options.ts lines 112-121",
+        "Logger type definition at packages/elenwatch/src/logger.ts lines 1-37",
+        "capture-state struct and appendChunk logic at packages/elenwatch/src/interceptor.ts lines 95-118 and 564-591",
+        "Brief's chosen default (~10 MiB) and body-dropped seam design (parallel onBodyDropped callback)"
+      ],
+      "expectedResult": "maxBodyBytes cap trips and emits body-dropped event; cap-trip test passes asserting no further capture and exactly one callback invocation",
+      "dependsOn": [],
+      "rubric": [
+        {
+          "id": "cap-trip-test-asserts-both-halves",
+          "label": "Cap-trip test asserts capture stops AND callback fires exactly once",
+          "ruleStatement": "Caller acceptance criterion verbatim: 'the cap-trip test must exist.' A score of 10 means the test in packages/elenwatch/src/interceptor.test.ts (a) constructs a request whose body exceeds a deliberately-small maxBodyBytes (≤1024 bytes), (b) asserts that no chunks after the trip are appended to requestBodyChunks, and (c) asserts that onBodyDropped is invoked exactly once with { host, direction: 'request', bytes >= cap, cap = maxBodyBytes }. minScore 7.",
+          "passCriteria": [
+            "A test in interceptor.test.ts has a name containing 'maxBodyBytes' or both 'body' and 'cap'.",
+            "The test sets maxBodyBytes to a value ≤1024 and sends a request whose body.byteLength strictly exceeds that value.",
+            "The test reads requestBodyChunks after the request completes and asserts its total byteLength is ≤ maxBodyBytes (the cap).",
+            "The test installs a spy (jest.fn) on onBodyDropped and asserts `spy.mock.calls.length === 1`.",
+            "The test asserts the first callback argument has `direction === 'request'`, `cap === maxBodyBytes`, `bytes >= cap`, and `host` is the destination hostname."
+          ],
+          "failureExamples": [
+            "Test exists but only asserts the callback fires; it never inspects requestBodyChunks.",
+            "Test asserts `spy.mock.calls.length >= 1` instead of `=== 1`.",
+            "Test uses a body whose size does not actually exceed the cap.",
+            "Dev wrote the request-side test but skipped a response-side test."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "per-direction-cap-state",
+          "label": "Cap accounting and short-circuit are per direction on the capture-state struct",
+          "ruleStatement": "A score of 10 means the capture-state struct at packages/elenwatch/src/interceptor.ts:95-118 carries `bytesCaptured: number` and `bodyDropped: boolean` independently for the request direction and for the response direction, appendChunk at interceptor.ts:564-591 short-circuits as soon as bytesCaptured[direction] + chunk.byteLength > maxBodyBytes, and both the request-body path and the response-body path consult the same per-direction fields. minScore 7.",
+          "passCriteria": [
+            "The capture-state type in interceptor.ts declares two pairs of fields — one for request, one for response — for bytesCaptured and bodyDropped.",
+            "appendChunk contains an early-return guard `if (bodyDropped[direction]) return;` that runs BEFORE the buffer.push.",
+            "Chunk size is computed via Buffer.byteLength or new TextEncoder().encode(chunk).byteLength, never via string `.length`.",
+            "`grep -n 'bodyDropped' packages/elenwatch/src/interceptor.ts` returns at least two call sites — one in the request-body path and one in the response-body path.",
+            "When maxBodyBytes is undefined, appendChunk behaves identically to its pre-phase behavior."
+          ],
+          "failureExamples": [
+            "Developer uses `requestBodyChunks.length` (chunk count) as the byte counter.",
+            "Developer stores a single `bodyDropped: boolean` shared between request and response.",
+            "appendChunk still pushes the chunk into the array but skips only the counter update after the push.",
+            "Developer computes chunk size with `chunk.length` on a string, missing that non-ASCII characters are multiple bytes."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "callback-fires-exactly-once-with-structured-info",
+          "label": "onBodyDropped fires once per direction with the structured info object",
+          "ruleStatement": "A score of 10 means onBodyDropped is invoked exactly once per (host, direction) on the first chunk whose append would exceed maxBodyBytes, with payload { host: string; direction: 'request' | 'response'; bytes: number; cap: number } where bytes is the running total at the moment of the trip. minScore 7.",
+          "passCriteria": [
+            "The onBodyDropped option type in options.ts matches `(info: { host: string; direction: 'request' | 'response'; bytes: number; cap: number }) => void`.",
+            "`grep -n 'onBodyDropped(' packages/elenwatch/src/interceptor.ts` shows exactly one call site inside appendChunk, gated by the trip condition.",
+            "A `bodyDropped[direction]` guard runs before the trip check so a second over-cap chunk cannot re-fire the callback.",
+            "The test asserts `info.host` equals the destination host — not undefined and not the empty string.",
+            "The test asserts `info.bytes` equals the running total at trip time."
+          ],
+          "failureExamples": [
+            "Callback is invoked inside the chunk loop without a `bodyDropped` guard, so it fires once per chunk after the cap.",
+            "`info.host` is read after the interceptor has already released or nulled the host variable.",
+            "`info.bytes` is set to the offending chunk's `byteLength` instead of the running total.",
+            "The onBodyDropped signature accepts `(info: any) => void`."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "options-surface-and-default",
+          "label": "maxBodyBytes and onBodyDropped surface on InterceptorOptions with safe default",
+          "ruleStatement": "A score of 10 means InterceptorOptions adds both `maxBodyBytes?: number` and `onBodyDropped?: (info: BodyDroppedInfo) => void`, the docstring at options.ts:78-111 documents both fields with units ('bytes') and the default value, the Interceptor constructor applies the default (~10 MiB) when maxBodyBytes is undefined, and a maxBodyBytes value of 0 or negative is treated as 'use the default' or throws an Error. minScore 6.",
+          "passCriteria": [
+            "Reading options.ts shows both `maxBodyBytes?: number` and `onBodyDropped?: (info: { host: string; direction: 'request' | 'response'; bytes: number; cap: number }) => void` in the InterceptorOptions type.",
+            "The JSDoc block above the type names both new fields, says 'bytes' for the cap unit, and states the default value.",
+            "The Interceptor constructor in interceptor.ts:683-692 contains a line like `const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;` before the cap is read anywhere downstream.",
+            "A maxBodyBytes value of 0 or a negative number does NOT silently disable capture.",
+            "`tsc --noEmit` succeeds with the new options surface and the callback signature contains no `any` and no `unknown`."
+          ],
+          "failureExamples": [
+            "Developer added the fields to the type but forgot to read them in the constructor.",
+            "Default is hard-coded as 10_000_000 (10 MB decimal) while the docstring says '10 MiB'.",
+            "Setting maxBodyBytes = 0 silently disables capture.",
+            "The onBodyDropped type uses `(info: any) => void`."
+          ],
+          "minScore": 6
+        },
+        {
+          "id": "logger-seam-untouched-and-existing-checks-green",
+          "label": "Logger seam stays LlmLogEntry-only AND tsc/eslint/tests all green",
+          "ruleStatement": "Caller acceptance criterion verbatim: 'existing test/typecheck/lint stay green throughout the horizon.' A score of 10 means (a) the Logger type is unchanged from before the phase — it still only accepts LlmLogEntry, AND (b) `tsc --noEmit`, `eslint .`, and `jest` (or the project's equivalent test runner) all exit 0 with the new test included. minScore 7.",
+          "passCriteria": [
+            "`git diff --stat packages/elenwatch/src/logger.ts` shows zero changes attributable to this phase.",
+            "`npx tsc --noEmit` exits 0 across the workspace, including the new test file.",
+            "`npx eslint .` exits 0 across the workspace, including the new test file.",
+            "`npx jest` (or the project's test runner) exits 0 with the new cap-trip test in the passing set and zero previously-passing tests now failing.",
+            "Grep for `Logger` in options.ts confirms the existing `(entry: LlmLogEntry) => void` shape is still the only Logger callback in the options surface."
+          ],
+          "failureExamples": [
+            "Developer added a `logBodyDropped?: ...` field to the Logger type as a 'convenience'.",
+            "The cap-trip test passes but a previously-passing test now fails because appendChunk's new short-circuit accidentally drops a chunk that the old test expected.",
+            "TypeScript strict mode rejects the new options because the developer declared `onBodyDropped?: Function` instead of a typed callback.",
+            "ESLint flags an `any` cast in the new callback payload."
+          ],
+          "minScore": 7
+        }
+      ],
+      "healerHint": "If the cap-trip test sees onBodyDropped fire correctly but requestBodyChunks still contains every over-cap chunk, appendChunk is invoking the callback before the early-return — move the `if (bodyDropped[direction]) return;` guard to the top of appendChunk so it runs before both the byte math and the callback, and reset `bytesCaptured[direction]` to `cap` on trip so the running total doesn't drift if a future change adds post-trip accounting."
+    },
+    {
+      "id": "tighten-package-metadata-lockfile-and-types",
+      "order": 4,
+      "name": "Tighten package metadata, drop dual lockfile, split types condition, verify lint disables",
+      "goal": "Add repository/bugs/homepage/packageManager fields to package.json, delete the duplicate package-lock.json, split exports['.'].types per ESM/CJS, and run the eslint-disable verification on otel.ts:38 and otel.test.ts:101.",
+      "rationale": "The published 0.2.0 tarball lacks standard metadata, ships a duplicate lockfile (the repo is pnpm-managed per the workspace layout, and packages/elenwatch/.gitignore already excludes package-lock.json), and has a single .d.ts types condition that fails arethetypeswrong because both `import` and `require` resolve to the CJS .d.ts. The two eslint-disable directives in otel.ts:38 and otel.test.ts:101 are listed as packaging hygiene but require verification.",
+      "filesAffected": ["packages/elenwatch/package.json", "packages/elenwatch/tsconfig.cjs.json", "packages/elenwatch/tsconfig.esm.json", "packages/elenwatch/package-lock.json", "packages/elenwatch/src/otel.ts", "packages/elenwatch/src/otel.test.ts", "packages/elenwatch/src/packaging-metadata.test.ts"],
+      "changes": [
+        "Add `repository` (type=git, url from git remote), `bugs` ({url, email}), `homepage` (README.md url on the default branch), and `packageManager: 'pnpm@<pinned version>'` fields to packages/elenwatch/package.json.",
+        "Split exports['.'].types per ESM/CJS in package.json: `{ \"types\": \"./dist/esm/index.d.ts\", \"import\": \"./dist/esm/index.js\", \"require\": \"./dist/cjs/index.js\" }`. Keep the top-level `types` field as a fallback for legacy resolvers.",
+        "Delete packages/elenwatch/package-lock.json from the working tree. Confirm the .gitignore line for package-lock.json is already in place.",
+        "Verification step on the eslint-disable directives: remove the directive at packages/elenwatch/src/otel.ts:38, run `npm run lint` in packages/elenwatch/, and KEEP the directive if lint fails. Apply the same verification to otel.test.ts:101. If either directive is removable, remove it; if lint fails, leave it.",
+        "Add a small test (packaging-metadata.test.ts) that asserts packages/elenwatch/package.json has the new repository/bugs/homepage/packageManager fields and that exports['.'].types resolves to ./dist/esm/index.d.ts under the import condition."
+      ],
+      "boundedContext": "Packaging (metadata + exports shape)",
+      "layer": "infrastructure",
+      "blastRadius": "small",
+      "inputs": [
+        "Existing packages/elenwatch/package.json (full file) and the current exports block",
+        "packages/elenwatch/.gitignore (already excludes package-lock.json per discovery)",
+        "Required materials: git remote URL, current engines.node range, current pnpm version",
+        "Existing packages/elenwatch/src/otel.ts line 38 and otel.test.ts line 101 directives + eslint.config.mjs rule set"
+      ],
+      "expectedResult": "package.json metadata complete, single lockfile (pnpm), per-condition types in place, eslint disables verified (removed if truly unused, kept if required); packaging-metadata test passes",
+      "dependsOn": [],
+      "rubric": [
+        {
+          "id": "package-metadata-fields",
+          "label": "repository / bugs / homepage / packageManager fields are present and correct",
+          "ruleStatement": "On a 0–10 scale: 10 means package.json has all four fields with values that resolve to a real git remote, a real issue tracker URL, the README on the default branch, and a pnpm version pinned in corepack-compatible format, AND packaging-metadata.test.ts has a passing assertion for each. minScore 8.",
+          "passCriteria": [
+            "Run `node -e \"const p=require('./packages/elenwatch/package.json'); console.log(p.repository, p.bugs, p.homepage, p.packageManager)\"` from the repo root and confirm four non-empty values are printed.",
+            "Run `git -C packages/elenwatch remote get-url origin` and confirm the URL in `repository.url` matches it.",
+            "Open the value of `homepage` in a browser and confirm it renders the project's README.md, not a 404 or a tree listing.",
+            "Run `corepack use pnpm@<version-from-packageManager>` in a fresh directory and confirm corepack accepts the pinned version without an integrity error."
+          ],
+          "failureExamples": [
+            "`repository.url` is set to the developer's fork instead of the upstream remote.",
+            "`packageManager` is `'pnpm@9.0.0'` without the required sha512 integrity hash.",
+            "`bugs` contains `{email: ...}` only and no `url`.",
+            "`homepage` points to `/blob/master/README.md` on a repository whose default branch is `main`."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "single-lockfile",
+          "label": "Single lockfile (pnpm only) — no duplicate package-lock.json in the tarball",
+          "ruleStatement": "On a 0–10 scale: 10 means exactly one lockfile (pnpm-lock.yaml) ships with the published tarball, packages/elenwatch/.gitignore lists package-lock.json, and `npm pack` produces a tarball whose file listing contains no entry ending in `package-lock.json` or `yarn.lock`. minScore 9.",
+          "passCriteria": [
+            "Run `git -C packages/elenwatch ls-files | grep -E '(package-lock|yarn)\\.lock$'` from the repo root and confirm the only output is the pnpm-managed pnpm-lock.yaml at the workspace root.",
+            "Open packages/elenwatch/.gitignore and confirm a line matching `package-lock.json` exists.",
+            "Run `npm pack --pack-destination /tmp/elenwatch-pack` from packages/elenwatch and then run `tar -tzf /tmp/elenwatch-pack/*.tgz | grep -E '(package-lock|yarn)\\.lock$'` and confirm the grep returns no output."
+          ],
+          "failureExamples": [
+            "Developer deletes packages/elenwatch/package-lock.json but never re-runs `pnpm install`.",
+            "Developer removes the duplicate lockfile but a transitive dependency's postinstall script regenerates package-lock.json during `npm pack`.",
+            "Workspace root has both pnpm-lock.yaml AND a leftover yarn.lock."
+          ],
+          "minScore": 9
+        },
+        {
+          "id": "exports-types-per-condition",
+          "label": "Per-condition `exports['.'].types` split for ESM/CJS",
+          "ruleStatement": "On a 0–10 scale: 10 means `exports['.'].types` is an object keyed by `import` and `require`, each pointing to the matching .d.ts; `arethetypeswrong` reports zero errors at strictest resolution; the top-level `types` field is still present as a legacy fallback; and packaging-metadata.test.ts asserts the import-condition resolution. minScore 8.",
+          "passCriteria": [
+            "Run `node -e \"const p=require('./packages/elenwatch/package.json'); console.log(JSON.stringify(p.exports['.'].types, null, 2))\"` and confirm the output is an object with both `import` and `require` keys, each set to a string ending in `.d.ts`.",
+            "Confirm the value at `exports['.'].types.import` is `./dist/esm/index.d.ts` and `exports['.'].types.require` is `./dist/cjs/index.d.ts`.",
+            "Run `npx -y @arethetypeswrong/core@latest --pack packages/elenwatch` and confirm `resolutions.importer.types` and `resolutions.requirer.types` both report `OK`.",
+            "Confirm the top-level `types` field at the package root is still present.",
+            "packaging-metadata.test.ts contains at least one assertion that `exports['.'].types.import === './dist/esm/index.d.ts'` AND at least one negative assertion that the wrong path is NOT what `import` resolves to."
+          ],
+          "failureExamples": [
+            "Developer sets `exports['.'].types.import` to the ESM .d.ts but leaves `exports['.'].types.require` unset.",
+            "Developer splits the per-condition types object but accidentally swaps import and require paths.",
+            "Developer removes the top-level `types` field entirely.",
+            "packaging-metadata.test.ts only asserts that `exports['.'].types` is an object, never asserts the actual paths."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "eslint-disable-verification",
+          "label": "Both eslint-disable directives in otel.ts:38 and otel.test.ts:101 are physically re-tested",
+          "ruleStatement": "On a 0–10 scale: 10 means the developer physically removed the directive at otel.ts:38 and otel.test.ts:101 (one at a time), ran `npm run lint` after each removal, and committed the file in the state lint left it. minScore 8.",
+          "passCriteria": [
+            "The git diff for packages/elenwatch/src/otel.ts contains either the original eslint-disable line preserved in its original location with no other change to that line, or the line deleted with no replacement.",
+            "The git diff for packages/elenwatch/src/otel.test.ts satisfies the same condition for its line-101 directive.",
+            "The commit message (or PR description) records which directives were removed vs kept and why.",
+            "`npm run lint` exits 0 in packages/elenwatch/ from a clean checkout at HEAD."
+          ],
+          "failureExamples": [
+            "Developer reads both directives, judges by visual inspection that they look unused, and deletes them — but one of them was actually guarding a type-aware rule.",
+            "Developer tests the otel.ts directive by removing it, sees lint fail, restores it — but never tests the otel.test.ts directive.",
+            "Developer disables the rule globally via eslint.config.mjs instead of removing the directive.",
+            "Developer removes both directives, sees lint pass, commits — but never noticed lint also passed with the directives in place because the type-aware rule was already disabled in the config."
+          ],
+          "minScore": 8
+        },
+        {
+          "id": "non-regression-of-checks",
+          "label": "Existing test / typecheck / lint pipeline stays green end-to-end",
+          "ruleStatement": "On a 0–10 scale: 10 means `pnpm -r test`, `pnpm -r typecheck`, and `pnpm -r lint` all exit 0 across the workspace after the changes land, with the new packaging-metadata.test.ts counted among the passing tests. minScore 9.",
+          "passCriteria": [
+            "From the workspace root, run `pnpm -r test 2>&1 | tee /tmp/test.log` and confirm exit code is 0 and the log shows the new packaging-metadata.test.ts passing.",
+            "Run `pnpm -r typecheck 2>&1 | tee /tmp/tc.log` and confirm exit code 0.",
+            "Run `pnpm -r lint 2>&1 | tee /tmp/lint.log` and confirm exit code 0.",
+            "Diff the CI workflow file before and after the phase and confirm no step was weakened."
+          ],
+          "failureExamples": [
+            "Adding `repository`, `bugs`, `homepage`, `packageManager` to package.json changes its byte length enough to break a snapshot test that pinned the exact JSON serialization.",
+            "Splitting `exports['.'].types` per condition changes the resolved module shape and breaks a downstream consumer test that hard-coded the CJS-only resolution path.",
+            "Removing package-lock.json causes npm-based CI to fall back to building from package.json, which works locally but a CI matrix entry that runs `npm install` regenerates package-lock.json.",
+            "Developer adds `--passWithNoTests` to the `vitest run` invocation in CI to make the new test count as a pass even if vitest finds zero tests."
+          ],
+          "minScore": 9
+        }
+      ],
+      "healerHint": "The most likely miss is that the per-condition types object was created by mirroring the legacy `types` field into both `import.types` and `require.types` — re-run `npx @arethetypeswrong/core --pack packages/elenwatch` and confirm `resolutions.requirer.types` resolves to `./dist/cjs/index.d.ts`, not the same ESM .d.ts that `import` resolves to."
+    },
+    {
+      "id": "add-build-time-version-exclude-shim-and-tests",
+      "order": 5,
+      "name": "Add build-time VERSION script, exclude sdk-fetch-shim from dist, packaging-sanity tests",
+      "goal": "Generate VERSION from package.json at build time, exclude sdk-fetch-shim.ts from the dist tree so it stops shipping a broken .d.ts that references @ai-sdk/anthropic, and add a packaging-sanity test that asserts the generated dist matches package.json and the tarball is clean.",
+      "rationale": "src/index.ts:33 hand-duplicates VERSION = '0.2.0' from package.json line 3 — the two will drift. The sdk-fetch-shim is test-only and unexported but still compiles to dist/cjs and dist/esm, and its .d.ts imports `@ai-sdk/anthropic`. Excluding the shim from tsconfig.{cjs,esm}.json stops the emit. The packaging-sanity test is the guard against VERSION drift and against re-introducing either artifact into the tarball.",
+      "filesAffected": ["packages/elenwatch/scripts/build-version.mjs (new)", "packages/elenwatch/src/version.ts (new, generated)", "packages/elenwatch/src/index.ts", "packages/elenwatch/tsconfig.cjs.json", "packages/elenwatch/tsconfig.esm.json", "packages/elenwatch/src/sdk-fetch-shim.ts (exclude only)", "packages/elenwatch/src/packaging-build.test.ts (new)"],
+      "changes": [
+        "Add a prebuild script (scripts/build-version.mjs) that reads packages/elenwatch/package.json's version field and writes src/version.ts exporting `VERSION`.",
+        "Update src/index.ts to `export { VERSION } from './version';` (remove the hand-duplicated constant). Wire the prebuild step into the `build` script in packages/elenwatch/package.json.",
+        "Verify tsc emits both dist/esm/version.js and dist/cjs/version.js after build, and that the exported constant equals package.json's version.",
+        "Add `src/sdk-fetch-shim.ts` to the exclude list in tsconfig.cjs.json and tsconfig.esm.json so it stops emitting to dist.",
+        "Add a packaging-sanity test (packaging-build.test.ts) that (a) reads the built dist/esm/version.js and asserts VERSION equals package.json's version, (b) runs `npm pack --dry-run` and asserts the tarball listing does NOT contain sdk-fetch-shim.js or package-lock.json, and (c) reads dist/esm/index.d.ts and dist/cjs/index.d.ts and asserts the ESM .d.ts references the esm types condition shape."
+      ],
+      "boundedContext": "Build pipeline and dist tree",
+      "layer": "infrastructure",
+      "blastRadius": "medium",
+      "inputs": [
+        "Existing src/index.ts line 33 hand-duplicated VERSION constant",
+        "Existing packages/elenwatch/tsconfig.cjs.json and tsconfig.esm.json include/exclude patterns and postbuild.mjs",
+        "Required material: full list of @ai-sdk/anthropic import sites (to confirm test-time resolution after shim exclusion)",
+        "Required material: arethetypeswrong CLI availability (for the optional ESM/CJS types verification)"
+      ],
+      "expectedResult": "VERSION generated at build time matches package.json; sdk-fetch-shim absent from dist; packaging-sanity tests pass on a fresh `pnpm build && pnpm test` run",
+      "dependsOn": [],
+      "rubric": [
+        {
+          "id": "version-dist-sync",
+          "label": "VERSION in dist matches package.json",
+          "ruleStatement": "Score 0-10. 10 = both dist/cjs/version.js and dist/esm/version.js export a string literal that is byte-identical to packages/elenwatch/package.json's `version` field, src/version.ts is re-generated on every build via a `prebuild` script in package.json, and src/index.ts no longer contains a hand-duplicated VERSION constant. minScore 7.",
+          "passCriteria": [
+            "After `pnpm --filter elenwatch build`, `cat packages/elenwatch/dist/cjs/version.js` contains a line exporting the string `\"<x.y.z>\"` where `<x.y.z>` is byte-identical to the `version` field in packages/elenwatch/package.json.",
+            "After `pnpm --filter elenwatch build`, `cat packages/elenwatch/dist/esm/version.js` exports the same `<x.y.z>` string.",
+            "packages/elenwatch/package.json `scripts` contains a `prebuild` entry that runs the version-generation script, and the `build` script chains so that script runs before tsc emits dist/.",
+            "`grep -nE \"VERSION\\s*[:=]\" packages/elenwatch/src/index.ts` returns no defining line for VERSION."
+          ],
+          "failureExamples": [
+            "scripts/build-version.mjs writes src/version.ts with a hardcoded literal string instead of reading package.json.",
+            "prebuild is missing from package.json; postbuild.mjs only regenerates src/version.ts AFTER tsc runs.",
+            "Only dist/cjs/version.js is regenerated; the esm build path is skipped."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "shim-excluded-from-dist",
+          "label": "sdk-fetch-shim absent from dist tree, still present in src",
+          "ruleStatement": "Score 0-10. 10 = neither dist/cjs/sdk-fetch-shim.{js,d.ts} nor dist/esm/sdk-fetch-shim.{js,d.ts} exists after build, src/sdk-fetch-shim.ts still exists in source so tests that import it still resolve, and `grep -r '@ai-sdk/anthropic' dist/` returns zero hits. minScore 7.",
+          "passCriteria": [
+            "After `pnpm --filter elenwatch build`, `find packages/elenwatch/dist -name 'sdk-fetch-shim*'` returns zero results.",
+            "`ls packages/elenwatch/src/sdk-fetch-shim.ts` exists and the test that imports it still resolves at test time.",
+            "tsconfig.cjs.json and tsconfig.esm.json both list `sdk-fetch-shim.ts` (full filename, not the bare module name) in their `exclude` arrays.",
+            "`grep -r \"@ai-sdk/anthropic\" packages/elenwatch/dist/` returns zero lines."
+          ],
+          "failureExamples": [
+            "tsconfig.cjs.json's exclude entry is `sdk-fetch-shim` (no .ts extension) — TypeScript matches glob patterns against .ts files, so the entry is ignored.",
+            "postbuild.mjs runs `cp src/*.js dist/cjs/ && cp src/*.d.ts dist/cjs/` after tsc, re-introducing sdk-fetch-shim.{js,d.ts}.",
+            "Developer deletes src/sdk-fetch-shim.ts to guarantee it does not leak; the test that does `import { ... } from './sdk-fetch-shim'` now throws MODULE_NOT_FOUND."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "tarball-clean",
+          "label": "Tarball from `npm pack` is clean",
+          "ruleStatement": "Score 0-10. 10 = `npm pack --dry-run` from packages/elenwatch lists every published file, the listing contains no `package/sdk-fetch-shim.js`, no `package/sdk-fetch-shim.d.ts`, and no `package/package-lock.json`, and an explicit allow/deny mechanism (a `files` array in package.json or an .npmignore) is the rule that excludes them. minScore 7.",
+          "passCriteria": [
+            "`cd packages/elenwatch && npm pack --dry-run` output's file list contains no line matching `sdk-fetch-shim.js` or `sdk-fetch-shim.d.ts`.",
+            "The same listing contains no line matching `package-lock.json` at the package root.",
+            "packages/elenwatch/package.json has either a `files` array (explicit allowlist) or a sibling .npmignore (explicit denylist).",
+            "The packaging-sanity test parses `npm pack --dry-run` output (or invokes it programmatically) and FAILS the suite if either forbidden path reappears."
+          ],
+          "failureExamples": [
+            "package.json has no `files` field and no .npmignore; npm7+'s default excludes package-lock.json today, but the listing still includes `package/sdk-fetch-shim.js`.",
+            "`files: [\"dist\"]` is set but dist/ contains a stray `dist/test/` folder copied by a debug script.",
+            "Developer adds `files: [\"dist\", \"README.md\"]` and `.npmignore` is empty, but `.npmrc` says `ignore-scripts=false`."
+          ],
+          "minScore": 7
+        },
+        {
+          "id": "esm-types-condition",
+          "label": "ESM .d.ts uses a separate types condition",
+          "ruleStatement": "Score 0-10. 10 means packages/elenwatch/package.json `exports` map carries a `types` condition key whose value for the `import` branch points to a path under dist/esm/ distinct from the `require` branch's cjs path, dist/esm/index.d.ts exists as valid TypeScript declaration syntax, and `tsc --noEmit --module Node16 --moduleResolution Node16` against the consumer entrypoint resolves the ESM types. minScore 6.",
+          "passCriteria": [
+            "`cat packages/elenwatch/dist/esm/index.d.ts` exists, parses as TypeScript, and contains a re-export declaration for VERSION that matches the ESM runtime shape.",
+            "packages/elenwatch/package.json `exports['.']` (or top-level) has a `types` condition; under the `import` branch it points to `./dist/esm/index.d.ts` and under `require` to `./dist/cjs/index.d.ts`.",
+            "`pnpm --filter elenwatch exec tsc -p packages/elenwatch/tsconfig.esm.json --noEmit` exits 0 with the esm types file as the entrypoint."
+          ],
+          "failureExamples": [
+            "dist/esm/index.d.ts is emitted but its contents are identical to dist/cjs/index.d.ts.",
+            "package.json `exports` is missing the `types` condition entirely.",
+            "Developer adds the `types` condition but points both `import` and `require` to dist/cjs/index.d.ts."
+          ],
+          "minScore": 6
+        },
+        {
+          "id": "regression-suite-stays-green",
+          "label": "Existing test, typecheck, and lint stay green",
+          "ruleStatement": "Score 0-10. 10 = `pnpm test`, `pnpm typecheck`, and `pnpm lint` from packages/elenwatch all exit 0 and the test count is unchanged from `main` HEAD~1, with no test marked `.skip` or `.todo` and no new `// @ts-ignore` / `eslint-disable` comments. minScore 7.",
+          "passCriteria": [
+            "`pnpm --filter elenwatch test` exits 0 and the reported test count equals the count on the pre-phase commit; no test file is `.skip` or `.todo`.",
+            "`pnpm --filter elenwatch typecheck` (or `tsc --noEmit -p tsconfig.cjs.json && tsc --noEmit -p tsconfig.esm.json`) exits 0 with zero diagnostics.",
+            "`pnpm --filter elenwatch lint` exits 0; no new `eslint-disable` comments were added.",
+            "packaging-build.test.ts itself is part of the green run."
+          ],
+          "failureExamples": [
+            "After excluding sdk-fetch-shim.ts from tsconfig, tsc --noEmit passes but `pnpm test` fails because the existing test imports `./sdk-fetch-shim` directly; the developer marks the test `.skip`.",
+            "Developer tightens tsconfig to `moduleResolution: Node16` and gets TS7016 at a pre-existing import site; they silence it with a per-line `// @ts-ignore`.",
+            "ESLint config flags `no-restricted-imports` on the new dist paths; the developer adds per-file `eslint-disable` comments."
+          ],
+          "minScore": 7
+        }
+      ],
+      "healerHint": "If the packaging-sanity test fails on a fresh checkout, the most likely cause is that the `prebuild` script is missing from packages/elenwatch/package.json so src/version.ts is generated AFTER tsc — add `\"prebuild\": \"node scripts/build-version.mjs\"` so npm runs it before tsc emits dist/, and src/version.ts will exist when tsc needs it."
+    }
+  ],
+  "successCriteria": [
+    "providers-filter guard on fetch path: dispatcher runs shouldCapture before attachCapture and early-returns for non-provider hosts, with no capture-state allocation",
+    "synthetic getHeader returns undefined for absent non-host keys and hostHeader only for the `host` key",
+    "streamed request-body capture completes before dispatch returns; race test asserts captured body equals full uploaded body",
+    "maxBodyBytes cap trips and emits body-dropped event; cap-trip test asserts no further capture and exactly one callback invocation",
+    "package.json metadata complete (repository/bugs/homepage/packageManager), single lockfile (pnpm), per-condition types in place, eslint disables verified",
+    "VERSION generated at build time matches package.json; sdk-fetch-shim absent from dist; packaging-sanity tests pass on a fresh `pnpm build && pnpm test` run",
+    "tsc, eslint, and jest stay green throughout the horizon",
+    "`npm pack --dry-run` shows a clean tarball without sdk-fetch-shim and without a duplicate lockfile",
+    "`arethetypeswrong` no longer flags the .d.ts types condition"
+  ],
+  "deferred": [
+    "Document 0.2.1 in README and CHANGELOG (deferred to next Planning Horizon)",
+    "Add CI workflow for 0.2.1 (.github/workflows/ci.yml) (deferred to next Planning Horizon)",
+    "Patch-stacking APM documentation (bundled with the README/CHANGELOG phase above)",
+    "Repairing sdk-fetch-shim's @ai-sdk/anthropic deep import type — analysis out-of-scope; the shim is excluded from dist and deep imports stop working by design",
+    "Replacing the providers filter with a richer policy DSL — out-of-scope; brief asks for the existing filter to be honored, not redesigned",
+    "Implementing streaming or heuristic token estimation — out-of-scope; task is about bounds and correctness",
+    "Migrating from the dual http/https+undici surface to undici-only — out-of-scope; the bug lives inside that dual surface",
+    "Removing the http/https patch path or moving it behind a feature flag — out-of-scope",
+    "Adding CONTRIBUTING.md, .editorconfig, LICENSE, or a security policy — out-of-scope",
+    "Adding semantic-release, release-please, or changesets automation — out-of-scope",
+    "Auditing downstream consumers of elenwatch's public API for behavioral drift — out-of-scope",
+    "Adding a public APM-cooperation hook — out-of-scope",
+    "Implementing a content-length precheck on the http/https path — out-of-scope",
+    "Splitting the @ai-sdk/anthropic deep import into a proper SDK adapter — out-of-scope",
+    "Adding per-host capture rules, regex anchoring enforcement, or a TypeScript-level type for the providers filter — out-of-scope",
+    "Switching to a different HTTP body-capture library — out-of-scope",
+    "Emitting a warning log line on restore() when the current prototype.write/end does not equal the captured wrappers — out-of-scope"
+  ],
+  "revision": 0
+}
