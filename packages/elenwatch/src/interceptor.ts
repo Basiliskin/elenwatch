@@ -49,6 +49,7 @@ import {
 import { Logger, consoleLogger } from './logger';
 import { RedactionConfig, redact } from './redaction';
 import {
+  BodyDroppedInfo,
   InterceptorOptions,
   LlmLogEntry,
   RequestTransformer,
@@ -62,6 +63,16 @@ const DEFAULT_PROVIDERS: string[] = [
   'api.cohere.ai',
   'api.mistral.ai',
 ];
+
+/**
+ * Default cap on buffered request and response bodies. ~10 MiB: high
+ * enough not to clip realistic LLM payloads (a 32k-token context can run
+ * several MB through a chat-completions response), low enough to bound
+ * the memory exposure a malicious or runaway provider can pin via the
+ * capture-side buffer. Defense-in-depth on top of the providers filter;
+ * NOT the primary privacy boundary.
+ */
+const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024;
 
 // Optional peer dep: undici (^6.0.0 || ^7.0.0). When the peer is installed
 // (npm install undici), this resolves to a module exposing
@@ -115,6 +126,21 @@ interface CaptureState {
   streamResult?: StreamingResult;
   /** SSE line-shape probe carry (bounded, 2-leading-lines). */
   probe?: { buffer: Buffer; probed: boolean };
+  /** Destination host for this request, captured at attachCapture time.
+   *  Read by appendChunk's cap-trip path to populate the onBodyDropped
+   *  info payload — kept on the state so the byte-cap enforcement code
+   *  path does not need to reach back to the (possibly released) req. */
+  host: string;
+  /** Running byte total per direction, accounting the actual byte length
+   *  of every chunk buffered so far (not chunk count). Compared against
+   *  the configured maxBodyBytes inside appendChunk to short-circuit
+   *  further capture for a direction once the cap is tripped. */
+  bytesCaptured: { request: number; response: number };
+  /** Per-direction trip latch — once true for a direction, appendChunk
+   *  early-returns for that direction so the trip fires exactly once
+   *  per (host, direction). Kept separate for request and response so a
+   *  request trip does not silence the response path and vice versa. */
+  bodyDropped: { request: boolean; response: boolean };
 }
 
 const kCapture = Symbol('elenwatch.capture');
@@ -349,13 +375,24 @@ class WrappingDispatcher extends EventEmitter {
       options.body !== undefined &&
       options.body !== null
     ) {
+      // Single cap context shared by every body-shape branch on this
+      // fetch dispatch — built from the interceptor instance fields that
+      // are immutable after construction, so reusing the same object for
+      // both the sync and the async branches is safe and avoids
+      // per-chunk reallocation inside the drain.
+      const reqCapCtx = {
+        state,
+        direction: 'request' as const,
+        cap: this.interceptor.maxBodyBytes,
+        onDropped: this.interceptor.onBodyDropped,
+      };
       const body = options.body;
       if (typeof body === 'string') {
-        state.requestBodyChunks.push(Buffer.from(body, 'utf8'));
+        appendChunk(state.requestBodyChunks, body, 'utf8', reqCapCtx);
         state.capturedEnd = true;
         state.finished = true;
       } else if (Buffer.isBuffer(body) || body instanceof Uint8Array) {
-        state.requestBodyChunks.push(Buffer.from(body as Uint8Array));
+        appendChunk(state.requestBodyChunks, body, undefined, reqCapCtx);
         state.capturedEnd = true;
         state.finished = true;
       } else if (typeof body === 'object' && Symbol.asyncIterator in body) {
@@ -379,16 +416,7 @@ class WrappingDispatcher extends EventEmitter {
             const src = body as AsyncIterable<unknown>;
             const chunks: Buffer[] = [];
             for await (const chunk of src) {
-              if (typeof chunk === 'string') {
-                chunks.push(Buffer.from(chunk, 'utf8'));
-              } else if (
-                Buffer.isBuffer(chunk) ||
-                chunk instanceof Uint8Array
-              ) {
-                chunks.push(Buffer.from(chunk as Uint8Array));
-              } else {
-                chunks.push(Buffer.from(String(chunk), 'utf8'));
-              }
+              appendChunk(chunks, chunk, undefined, reqCapCtx);
             }
             if (chunks.length > 0) {
               state.requestBodyChunks.push(...chunks);
@@ -533,29 +561,78 @@ function appendChunk(
   chunks: Buffer[],
   chunk: unknown,
   encoding?: string,
+  capCtx?: {
+    state: CaptureState;
+    direction: 'request' | 'response';
+    cap: number;
+    onDropped: ((info: BodyDroppedInfo) => void) | undefined;
+  },
 ): void {
+  if (capCtx && capCtx.state.bodyDropped[capCtx.direction]) {
+    // Trip latch already set for this direction — silent early-return so
+    // we don't re-fire the callback and don't waste cycles on already-
+    // over-cap bytes. Runs BEFORE the chunk decoding so an over-cap
+    // stream doesn't even build the Buffer.
+    return;
+  }
   if (chunk === null || chunk === undefined) {
     return;
   }
+  let buf: Buffer;
   if (typeof chunk === 'string') {
     // Keep the raw bytes so a multi-byte character split across two
     // chunks is not corrupted by per-chunk decoding: the final UTF-8
     // decode happens exactly once, on the concatenated buffer.
-    chunks.push(Buffer.from(chunk, encoding as BufferEncoding));
+    buf = Buffer.from(chunk, encoding as BufferEncoding);
   } else if (Buffer.isBuffer(chunk) || chunk instanceof Uint8Array) {
-    chunks.push(Buffer.from(chunk as Uint8Array));
+    buf = Buffer.from(chunk as Uint8Array);
   } else if (typeof chunk === 'object' || typeof chunk === 'function') {
     try {
-      chunks.push(Buffer.from(JSON.stringify(chunk), 'utf8'));
+      buf = Buffer.from(JSON.stringify(chunk), 'utf8');
     } catch {
-      chunks.push(Buffer.from('<unserializable>', 'utf8'));
+      buf = Buffer.from('<unserializable>', 'utf8');
     }
   } else {
     // Primitive (number | boolean | bigint | symbol): safe, and the type
     // guard above already excluded objects, so String() cannot produce the
     // `[object Object]` leak the lint rule guards against.
-    chunks.push(Buffer.from(String(chunk), 'utf8'));
+    buf = Buffer.from(String(chunk), 'utf8');
   }
+  if (capCtx) {
+    // Per-direction byte accounting. `byteLength` is the actual byte count
+    // for UTF-8 strings / Buffers / Uint8Arrays — never string `.length`
+    // (which would under-count multi-byte characters). The trip condition
+    // is "this chunk alone would push us over" rather than "we're already
+    // at the cap" so we trip on the first chunk that overflows, never on
+    // an exact-fit chunk.
+    const nextBytes =
+      capCtx.state.bytesCaptured[capCtx.direction] + buf.byteLength;
+    if (nextBytes > capCtx.cap) {
+      capCtx.state.bodyDropped[capCtx.direction] = true;
+      capCtx.state.bytesCaptured[capCtx.direction] = capCtx.cap;
+      const info: BodyDroppedInfo = {
+        host: capCtx.state.host,
+        direction: capCtx.direction,
+        bytes: capCtx.cap,
+        cap: capCtx.cap,
+      };
+      // Operator-facing log line so the trip is visible without a custom
+      // listener; the structured callback still fires for programmatic
+      // observers. console.error not console.log — body-cap events are
+      // operations signals, not normal log entries.
+      console.error(
+        `elenwatch: dropping body for host ${info.host}, ${buf.byteLength} bytes exceeds maxBodyBytes ${info.cap} (${info.direction})`,
+      );
+      try {
+        capCtx.onDropped?.(info);
+      } catch {
+        // A throwing onBodyDropped must never break the intercepted call.
+      }
+      return;
+    }
+    capCtx.state.bytesCaptured[capCtx.direction] = nextBytes;
+  }
+  chunks.push(buf);
 }
 
 /** Extract the optional encoding argument from a write/end arg list. */
@@ -638,6 +715,21 @@ export class Interceptor {
   private readonly redaction: RedactionConfig | undefined;
   private readonly requestTransform: RequestTransformer | undefined;
   private readonly responseTransform: ResponseTransformer | undefined;
+  /** Byte cap on buffered request and response bodies. Defense-in-depth
+   *  safety net on top of the providers filter; 0 / undefined / negative
+   *  values are normalised to DEFAULT_MAX_BODY_BYTES at construction so
+   *  the rest of the code path can read this field unconditionally.
+   *  Public-readonly because the WrappingDispatcher (same module, but a
+   *  separate class) needs to read it to build the capCtx for the fetch
+   *  path — the field is immutable after construction so external
+   *  readers cannot perturb the cap. */
+  public readonly maxBodyBytes: number;
+  /** Optional structured callback fired exactly once per (host, direction)
+   *  when the byte cap trips. Independent of the Logger seam — the
+   *  Logger type still only accepts LlmLogEntry, and adding a second
+   *  argument to that seam would silently widen its contract.
+   *  Public-readonly for the same reason as `maxBodyBytes` above. */
+  public readonly onBodyDropped: ((info: BodyDroppedInfo) => void) | undefined;
 
   private installed = false;
 
@@ -663,6 +755,16 @@ export class Interceptor {
     this.redaction = options.redaction;
     this.requestTransform = options.requestTransform;
     this.responseTransform = options.responseTransform;
+    // Normalise the byte cap: 0 / undefined / negative fall back to the
+    // built-in default so downstream code can read `this.maxBodyBytes`
+    // unconditionally without re-checking the input. Silently disabling
+    // capture on 0 would be a foot-gun — the providers filter is the
+    // privacy boundary, this is a safety net.
+    this.maxBodyBytes =
+      typeof options.maxBodyBytes === 'number' && options.maxBodyBytes > 0
+        ? options.maxBodyBytes
+        : DEFAULT_MAX_BODY_BYTES;
+    this.onBodyDropped = options.onBodyDropped;
   }
 
   get isInstalled(): boolean {
@@ -824,11 +926,21 @@ export class Interceptor {
       const tagged = tag(this);
       const capture = tagged[kCapture] as CaptureState | undefined;
       if (capture !== undefined) {
-        appendChunk(capture.requestBodyChunks, args[0], encodingArg(args));
+        appendChunk(capture.requestBodyChunks, args[0], encodingArg(args), {
+          state: capture,
+          direction: 'request',
+          cap: self.maxBodyBytes,
+          onDropped: self.onBodyDropped,
+        });
       } else if (!tagged[kNoCapture] && shouldCapture(this, self.providers)) {
         self.attachCapture(this, captureCallerTrace());
         const state = tagged[kCapture] as CaptureState;
-        appendChunk(state.requestBodyChunks, args[0], encodingArg(args));
+        appendChunk(state.requestBodyChunks, args[0], encodingArg(args), {
+          state,
+          direction: 'request',
+          cap: self.maxBodyBytes,
+          onDropped: self.onBodyDropped,
+        });
       } else if (!tagged[kNoCapture]) {
         tagged[kNoCapture] = true;
       }
@@ -846,7 +958,12 @@ export class Interceptor {
       const capture = tagged[kCapture] as CaptureState | undefined;
       if (capture !== undefined) {
         if (args[0] !== undefined) {
-          appendChunk(capture.requestBodyChunks, args[0], encodingArg(args));
+          appendChunk(capture.requestBodyChunks, args[0], encodingArg(args), {
+            state: capture,
+            direction: 'request',
+            cap: self.maxBodyBytes,
+            onDropped: self.onBodyDropped,
+          });
         }
         capture.capturedEnd = true;
         capture.finished = true;
@@ -857,7 +974,12 @@ export class Interceptor {
         self.attachCapture(this, captureCallerTrace());
         const state = tagged[kCapture] as CaptureState;
         if (args[0] !== undefined) {
-          appendChunk(state.requestBodyChunks, args[0], encodingArg(args));
+          appendChunk(state.requestBodyChunks, args[0], encodingArg(args), {
+            state,
+            direction: 'request',
+            cap: self.maxBodyBytes,
+            onDropped: self.onBodyDropped,
+          });
         }
         state.capturedEnd = true;
         state.finished = true;
@@ -943,6 +1065,13 @@ export class Interceptor {
     if (existing) {
       return;
     }
+    // Capture the destination host ONCE at attachCapture time so the
+    // byte-cap code path can populate `onBodyDropped`'s `host` field
+    // without reaching back to the (possibly released) req later. Uses
+    // the same helper shouldCapture relies on so the host string the
+    // operator sees in the dropped-event log matches the host string the
+    // filter actually matched against.
+    const host = reqHostname(req) ?? 'unknown';
     const state: CaptureState = {
       requestBodyChunks: [],
       responseBodyChunks: [],
@@ -950,6 +1079,9 @@ export class Interceptor {
       finished: false,
       emitted: false,
       callerTrace: callerTrace ?? 'unknown',
+      host,
+      bytesCaptured: { request: 0, response: 0 },
+      bodyDropped: { request: false, response: false },
     };
     reqTag[kCapture] = state;
 
@@ -1000,7 +1132,12 @@ export class Interceptor {
               // Not SSE: fall back to buffered capture with the FULL head
               // (the current chunk is already inside probeCarry).
               if (probeCarry.length > 0) {
-                appendChunk(state.responseBodyChunks, probeCarry);
+                appendChunk(state.responseBodyChunks, probeCarry, undefined, {
+                  state,
+                  direction: 'response',
+                  cap: this.maxBodyBytes,
+                  onDropped: this.onBodyDropped,
+                });
                 probeCarry = Buffer.alloc(0);
               }
               return;
@@ -1009,14 +1146,24 @@ export class Interceptor {
             // accumulating; probeCarry is bounded (≤1KB + one chunk).
             return;
           }
-          appendChunk(state.responseBodyChunks, chunk);
+          appendChunk(state.responseBodyChunks, chunk, undefined, {
+            state,
+            direction: 'response',
+            cap: this.maxBodyBytes,
+            onDropped: this.onBodyDropped,
+          });
         });
         res.on('end', () => {
           // If the body ended while still probing, decide now: no SSE
           // shape -> flush the carry into the buffered path so nothing is
           // lost. (SSE would already have promoted on a shape match.)
           if (mode === 'probe' && probeCarry.length > 0) {
-            appendChunk(state.responseBodyChunks, probeCarry);
+            appendChunk(state.responseBodyChunks, probeCarry, undefined, {
+              state,
+              direction: 'response',
+              cap: this.maxBodyBytes,
+              onDropped: this.onBodyDropped,
+            });
             probeCarry = Buffer.alloc(0);
           }
           if (mode === 'sse' && state.streamParser) {
@@ -1043,7 +1190,12 @@ export class Interceptor {
         return;
       }
       res.on('data', (chunk: Buffer) => {
-        appendChunk(state.responseBodyChunks, chunk);
+        appendChunk(state.responseBodyChunks, chunk, undefined, {
+          state,
+          direction: 'response',
+          cap: this.maxBodyBytes,
+          onDropped: this.onBodyDropped,
+        });
       });
       res.on('end', () => {
         state.finished = true;

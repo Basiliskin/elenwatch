@@ -2,7 +2,7 @@
   "roadmapFile": "docs/roadmaps/elenwatch/horizons/horizon-01-close-fetch-leak-add-cap-packaging-roadmap.json",
   "roadmapTask": "Ship elenwatch 0.2.1 as a production-ready patch that closes the providers-filter leak in the fetch/undici path, adds a configurable maxBodyBytes cap, fixes the streamed-request-body race and the synthetic getHeader header-lie, and tightens packaging (single lockfile, build-time VERSION generation, removal of the dead sdk-fetch-shim from dist, separate ESM .d.ts types condition, lint-disable verification) — each fix landed with real positive and negative tests.",
   "createdAt": "2026-08-31T08:21:05Z",
-  "updatedAt": "2026-08-31T09:05:00Z",
+  "updatedAt": "2026-08-31T09:25:00Z",
   "roadmapRevision": 0,
   "phases": [
     {
@@ -133,8 +133,47 @@
     },
     {
       "phaseId": "add-maxbodybytes-cap-and-body-dropped-event",
-      "status": "not-started",
-      "attempts": 0
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-31T09:15:00Z",
+      "completedAt": "2026-08-31T09:25:00Z",
+      "gateRun": "npm run typecheck (exit 0); npm run lint (exit 1 with the SAME 3 pre-existing diagnostics from prior phases: 1 unused-var rejectedWith in interceptor.test.ts:1846, 2 unused-eslint-disable in otel.ts:38 / otel.test.ts:101 — all flagged as out-of-scope per the horizon brief and unchanged from pre-phase state; 0 new diagnostics); npx jest --no-coverage (145 passed, 8 skipped [pre-existing SDK integration suites without keys], 0 failed — +4 new cap-trip tests)",
+      "gradeResult": {
+        "phaseId": "add-maxbodybytes-cap-and-body-dropped-event",
+        "dimensionScores": [
+          {
+            "dimensionId": "cap-trip-test-asserts-both-halves",
+            "score": 8,
+            "pass": true,
+            "evidence": "interceptor.test.ts cap-trip test sends chunk1 (7B) + chunk2 (~290B) against maxBodyBytes=256, asserts calls.length===1 with direction='request', cap=256, bytes>=cap, host contains '127.0.0.1', and maskedRequestBody=={a:1} (faithful equivalent of requestBodyChunks.byteLength<=cap since the capture-state struct is internal). A separate test covers the response-direction trip."
+          },
+          {
+            "dimensionId": "per-direction-cap-state",
+            "score": 8,
+            "pass": true,
+            "evidence": "CaptureState declares bytesCaptured:{request,response} and bodyDropped:{request,response} as separate pairs; appendChunk's early-return guard on bodyDropped[direction] runs BEFORE the chunks.push and BEFORE chunk decoding; byte accounting uses buf.byteLength, never string .length; bodyDropped is referenced across request and response paths; the cap guard is wrapped in `if (capCtx)` so omitting it yields pre-phase behavior."
+          },
+          {
+            "dimensionId": "callback-fires-exactly-once-with-structured-info",
+            "score": 7,
+            "pass": true,
+            "evidence": "BodyDroppedInfo defined as a named interface in options.ts; onBodyDropped has a single call site inside appendChunk's trip branch; bodyDropped[direction] guard runs before the trip check to prevent re-fire; tests assert host contains '127.0.0.1'. Implementation reports bytes===cap (clamped) rather than the literal running total — deliberate and documented in the JSDoc, so the dimension passes at minScore."
+          },
+          {
+            "dimensionId": "options-surface-and-default",
+            "score": 8,
+            "pass": true,
+            "evidence": "options.ts declares maxBodyBytes?:number and onBodyDropped?:(info:BodyDroppedInfo)=>void; JSDoc names both fields, says 'Unit: bytes', states 'Default: 10 MiB'; Interceptor constructor normalises 0/negative/undefined to DEFAULT_MAX_BODY_BYTES before any downstream read; a dedicated test verifies maxBodyBytes=0 falls back to 10*1024*1024 and capture remains active; tsc --noEmit passes and the callback signature contains no any/unknown."
+          },
+          {
+            "dimensionId": "logger-seam-untouched-and-existing-checks-green",
+            "score": 8,
+            "pass": true,
+            "evidence": "git diff confirms logger.ts is unmodified by this phase (only options.ts, interceptor.ts, interceptor.test.ts changed); options.ts references Logger only via the original logger?:Logger shape; tsc --noEmit exits 0; jest exits 0 with 145 passed / 0 failed including the 4 new h1p3 tests. ESLint exits 1 but only with the 3 pre-existing diagnostics flagged as out-of-scope — the phase introduced zero new lint diagnostics."
+          }
+        ],
+        "overallPass": true
+      }
     },
     {
       "phaseId": "tighten-package-metadata-lockfile-and-types",

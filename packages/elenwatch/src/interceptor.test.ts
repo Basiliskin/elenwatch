@@ -19,7 +19,7 @@ import {
   defaultEstimateInputTokens,
   defaultExtractOutputTokens,
 } from './interceptor';
-import type { LlmLogEntry } from './options';
+import type { BodyDroppedInfo, LlmLogEntry } from './options';
 import type { ProviderParser } from './provider-parser';
 
 /**
@@ -1868,4 +1868,225 @@ describe('streamed request-body capture-before-dispatch (h1p2)', () => {
       }
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// maxBodyBytes byte cap and onBodyDropped event (h1p3)
+//
+// The default interceptor buffers every body chunk without bound — a
+// malicious or runaway provider can pin unbounded memory on the
+// responseBodyChunks array. maxBodyBytes is a defense-in-depth safety
+// net on top of the providers filter: when a request/response body
+// would push the running byte total above the cap for that direction,
+// appendChunk short-circuits, the per-direction trip latch flips, and
+// onBodyDropped fires EXACTLY once with the structured info payload.
+// ---------------------------------------------------------------------------
+
+describe('maxBodyBytes cap with onBodyDropped event (h1p3)', () => {
+  /** Drive a single POST through http.request with multiple write()
+   *  calls so we can split the body across chunks and observe which
+   *  chunks make it into the capture buffer vs. which trip the cap. */
+  function postMultiWrite(
+    port: number,
+    chunks: Buffer[],
+  ): Promise<{ status: number }> {
+    return new Promise((resolve, reject) => {
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port,
+          method: 'POST',
+          path: '/v1/chat/completions',
+          headers: { 'content-type': 'application/json' },
+        },
+        (res) => {
+          res.on('data', () => {
+            /* drain */
+          });
+          res.on('end', () => resolve({ status: res.statusCode ?? 0 }));
+          res.on('error', reject);
+        },
+      );
+      req.on('error', reject);
+      for (const c of chunks) {
+        req.write(c);
+      }
+      req.end();
+    });
+  }
+
+  test('request body exceeding maxBodyBytes trips the cap once and the second chunk is not captured', async () => {
+    const calls: BodyDroppedInfo[] = [];
+    const entries: LlmLogEntry[] = [];
+
+    // Two distinct chunks whose concatenated byte length is well over
+    // the 256-byte cap. chunk1 is a small valid JSON object that the
+    // interceptor will capture (proving the trip did NOT happen on the
+    // first chunk); chunk2 would push the running total over the cap
+    // and is therefore dropped.
+    const chunk1 = Buffer.from('{"a":1}', 'utf8'); // 7 bytes
+    const filler = 'x'.repeat(280);
+    const chunk2 = Buffer.from(`{"b":"${filler}"}`, 'utf8'); // ~290 bytes
+    expect(chunk1.byteLength + chunk2.byteLength).toBeGreaterThan(256);
+
+    const cap = 256;
+    const interceptor = new Interceptor({
+      providers: ['127.0.0.1'],
+      capturePayloads: true,
+      maxBodyBytes: cap,
+      onBodyDropped: (info) => calls.push(info),
+      logger: (entry) => entries.push(entry),
+    });
+    interceptor.install();
+    const { port, close } = await startServer();
+    try {
+      const { status } = await postMultiWrite(port, [chunk1, chunk2]);
+      expect(status).toBe(200);
+    } finally {
+      interceptor.restore();
+      await close();
+    }
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    // Cap-trip contract: callback fires EXACTLY once, on the request
+    // direction, with the cap value the caller supplied and the running
+    // total at the moment of the trip.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].direction).toBe('request');
+    expect(calls[0].cap).toBe(cap);
+    expect(calls[0].bytes).toBeGreaterThanOrEqual(cap);
+    expect(calls[0].host).toContain('127.0.0.1');
+
+    // No-further-capture proof: if chunk2 had been appended, the
+    // concatenated request body would be '{"a":1}{"b":"xxxx…"}' which
+    // is NOT a single valid JSON value (two top-level objects), so
+    // JSON.parse inside emitLogEntry would fail and maskedRequestBody
+    // would be undefined. The fact that maskedRequestBody carries the
+    // chunk1 object intact is the assertion that chunk2 was NOT
+    // appended to the capture buffer.
+    expect(entries).toHaveLength(1);
+    expect(entries[0].maskedRequestBody).toEqual({ a: 1 });
+  });
+
+  test('response body exceeding maxBodyBytes trips the cap once on the response direction', async () => {
+    const calls: BodyDroppedInfo[] = [];
+    const entries: LlmLogEntry[] = [];
+
+    // Server returns a JSON body well over the cap; the request body is
+    // a tiny valid JSON so it does NOT trip the request cap.
+    const bigBody = JSON.stringify({ out: 'y'.repeat(2000) });
+    expect(Buffer.byteLength(bigBody, 'utf8')).toBeGreaterThan(256);
+    const cap = 256;
+
+    const { port, close } = await startServer((req, res) => {
+      req.resume();
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(bigBody);
+      });
+    });
+
+    const interceptor = new Interceptor({
+      providers: ['127.0.0.1'],
+      capturePayloads: true,
+      maxBodyBytes: cap,
+      onBodyDropped: (info) => calls.push(info),
+      logger: (entry) => entries.push(entry),
+    });
+    interceptor.install();
+    try {
+      await post(port, JSON.stringify({ ping: 'cap-response' }));
+    } finally {
+      interceptor.restore();
+      await close();
+    }
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    // Response-side trip only — the request body is small enough to
+    // fit under the cap.
+    const responseCall = calls.find((c) => c.direction === 'response');
+    expect(responseCall).toBeDefined();
+    expect(responseCall!.cap).toBe(cap);
+    expect(responseCall!.bytes).toBeGreaterThanOrEqual(cap);
+    expect(responseCall!.host).toContain('127.0.0.1');
+    expect(calls.filter((c) => c.direction === 'request')).toHaveLength(0);
+    expect(entries).toHaveLength(1);
+  });
+
+  test('maxBodyBytes=0 falls back to the built-in default (no silent disable)', async () => {
+    // A 0 / negative / undefined value MUST NOT silently disable
+    // capture. The interceptor applies DEFAULT_MAX_BODY_BYTES in
+    // those cases — verify this by sending a request body well under
+    // the default (10 MiB) and asserting the body is captured fully
+    // AND no body-dropped callback fires (proving the cap is still in
+    // effect, just at the default level).
+    const calls: BodyDroppedInfo[] = [];
+    const entries: LlmLogEntry[] = [];
+    const interceptor = new Interceptor({
+      providers: ['127.0.0.1'],
+      capturePayloads: true,
+      maxBodyBytes: 0,
+      onBodyDropped: (info) => calls.push(info),
+      logger: (entry) => entries.push(entry),
+    });
+    expect(interceptor.maxBodyBytes).toBe(10 * 1024 * 1024);
+
+    interceptor.install();
+    const { port, close } = await startServer();
+    try {
+      const body = JSON.stringify({ msg: 'small enough to fit' });
+      await post(port, body);
+    } finally {
+      interceptor.restore();
+      await close();
+    }
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(calls).toHaveLength(0);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].maskedRequestBody).toEqual({
+      msg: 'small enough to fit',
+    });
+  });
+
+  test('a throwing onBodyDropped does not break the intercepted call', async () => {
+    // A user-supplied callback that throws must not propagate out of
+    // appendChunk — the interceptor's deferred emit path already
+    // guards its own logger; the cap-trip callback deserves the same
+    // defensive try/catch.
+    const calls: BodyDroppedInfo[] = [];
+    const entries: LlmLogEntry[] = [];
+    const cap = 256;
+    const interceptor = new Interceptor({
+      providers: ['127.0.0.1'],
+      capturePayloads: true,
+      maxBodyBytes: cap,
+      onBodyDropped: (info) => {
+        calls.push(info);
+        throw new Error('trip-callback-boom');
+      },
+    });
+    interceptor.install();
+    const { port, close } = await startServer();
+    try {
+      // The 1kb body exceeds the cap; the throwing callback fires once
+      // and the request must still complete with status 200.
+      const body = 'x'.repeat(1024);
+      const { status } = await postMultiWrite(port, [
+        Buffer.from(body, 'utf8'),
+      ]);
+      expect(status).toBe(200);
+    } finally {
+      interceptor.restore();
+      await close();
+    }
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(calls).toHaveLength(1);
+    expect(entries.length).toBeLessThanOrEqual(1);
+  });
 });

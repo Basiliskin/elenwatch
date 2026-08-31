@@ -76,6 +76,21 @@ export type RequestTransformer = (requestBody: string) => string | undefined;
 export type ResponseTransformer = (responseBody: string) => string | undefined;
 
 /**
+ * Payload of the optional `onBodyDropped` callback. Fires at most once per
+ * (host, direction) — the first chunk whose append would push the running
+ * byte total above `maxBodyBytes` for that direction. The byte count
+ * reported is the running total AT the moment the cap tripped (clamped
+ * to the cap value), so operators can reason about how close the cap
+ * actually was when it tripped.
+ */
+export interface BodyDroppedInfo {
+  host: string;
+  direction: 'request' | 'response';
+  bytes: number;
+  cap: number;
+}
+
+/**
  * Interceptor options.
  *
  * `providers` — hostnames (exact or subdomain suffix) or regexes to
@@ -108,6 +123,22 @@ export type ResponseTransformer = (responseBody: string) => string | undefined;
  * event over that event's data payload. Absent option = passthrough
  * (unchanged behavior). Additive in horizon 4; zero invocation sites
  * until the response-strand rewire lands.
+ *
+ * `maxBodyBytes` — defense-in-depth byte cap on buffered request and
+ * response bodies. Unit: bytes. Default: 10 MiB (10 * 1024 * 1024). The
+ * cap is applied independently on each direction; once tripped for a
+ * direction, no further body chunks for that direction are buffered
+ * (the underlying wire write/read still completes normally — only the
+ * capture-side buffer is truncated). A value of 0 or negative falls
+ * back to the default. This is a secondary safety net on top of the
+ * `providers` filter; if `maxBodyBytes` becomes the de facto privacy
+ * boundary because the providers filter regresses, the privacy model
+ * has silently moved and `onBodyDropped` may start firing routinely.
+ *
+ * `onBodyDropped` — optional structured callback fired exactly once
+ * per (host, direction) at the moment the cap trips. Independent of
+ * the `logger` seam so the existing LlmLogEntry contract stays
+ * single-purpose; the `Logger` type still only accepts LlmLogEntry.
  */
 export interface InterceptorOptions {
   providers?: (string | RegExp)[];
@@ -118,4 +149,6 @@ export interface InterceptorOptions {
   redaction?: RedactionConfig;
   requestTransform?: RequestTransformer;
   responseTransform?: ResponseTransformer;
+  maxBodyBytes?: number;
+  onBodyDropped?: (info: BodyDroppedInfo) => void;
 }
