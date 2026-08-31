@@ -87,20 +87,20 @@ vars before invoking Jest.
 
 Env vars consumed by the test suite:
 
-| Variable | Purpose |
-|---|---|
-| `OPENAI_API_KEY` | gates `openai.integration.test.ts`, `openai.sdk.integration.test.ts` |
-| `OPENAI_BASE_URL` | optional override for the OpenAI base URL in those suites |
-| `OPENAI_MODEL` | optional override for the model name in those suites |
-| `ANTHROPIC_API_KEY` | gates `anthropic.integration.test.ts`, `anthropic.sdk.integration.test.ts` |
-| `ANTHROPIC_BASE_URL` | optional override for the Anthropic base URL |
-| `ANTHROPIC_MODEL` | optional override for the model name |
-| `GEMINI_API_KEY` | gates `gemini.integration.test.ts`, `gemini.sdk.integration.test.ts` (fallback to `GOOGLE_API_KEY`) |
-| `GOOGLE_API_KEY` | fallback for the Gemini suites |
-| `GEMINI_BASE_URL` | optional override for the Gemini base URL |
-| `GEMINI_MODEL` | optional override for the model name |
-| `NODE_TLS_REJECT_UNAUTHORIZED` | set to `0` inside `fetch-baseline.integration.test.ts` to talk to the local self-signed fixture server |
-| `RUN_BENCH=1` | opt-in switch that enables `benchmark.test.ts` (off by default; the suite runs 1000 warmup + 10000 measured iterations via `hrtime`) |
+| Variable                       | Purpose                                                                                                                              |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `OPENAI_API_KEY`               | gates `openai.integration.test.ts`, `openai.sdk.integration.test.ts`                                                                 |
+| `OPENAI_BASE_URL`              | optional override for the OpenAI base URL in those suites                                                                            |
+| `OPENAI_MODEL`                 | optional override for the model name in those suites                                                                                 |
+| `ANTHROPIC_API_KEY`            | gates `anthropic.integration.test.ts`, `anthropic.sdk.integration.test.ts`                                                           |
+| `ANTHROPIC_BASE_URL`           | optional override for the Anthropic base URL                                                                                         |
+| `ANTHROPIC_MODEL`              | optional override for the model name                                                                                                 |
+| `GEMINI_API_KEY`               | gates `gemini.integration.test.ts`, `gemini.sdk.integration.test.ts` (fallback to `GOOGLE_API_KEY`)                                  |
+| `GOOGLE_API_KEY`               | fallback for the Gemini suites                                                                                                       |
+| `GEMINI_BASE_URL`              | optional override for the Gemini base URL                                                                                            |
+| `GEMINI_MODEL`                 | optional override for the model name                                                                                                 |
+| `NODE_TLS_REJECT_UNAUTHORIZED` | set to `0` inside `fetch-baseline.integration.test.ts` to talk to the local self-signed fixture server                               |
+| `RUN_BENCH=1`                  | opt-in switch that enables `benchmark.test.ts` (off by default; the suite runs 1000 warmup + 10000 measured iterations via `hrtime`) |
 
 A template lives at [`packages/elenwatch/.env`](./packages/elenwatch/.env)
 with all of the credential / model slots declared (empty). Two ways to feed it
@@ -115,6 +115,7 @@ GEMINI_API_KEY=... pnpm --filter elenwatch test
 # Or load the .env file at invocation time (no project changes required)
 # e.g. with dotenv-cli, or any equivalent tool:
 dotenv -e packages/elenwatch/.env -- pnpm --filter elenwatch test
+npx dotenv-cli -e packages/elenwatch/.env -- pnpm --filter elenwatch test
 ```
 
 To run the opt-in latency benchmark:
