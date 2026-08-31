@@ -256,9 +256,24 @@ class WrappingDispatcher extends EventEmitter {
       protocol: originUrl.protocol,
       method: options.method,
       getHeader(name: string): string | undefined {
-        return headersLower.get(name.toLowerCase()) ?? hostHeader;
+        return syntheticGetHeader(name, headersLower, hostHeader);
       },
     });
+
+    // Honour the user-supplied `providers` filter the same way the
+    // http/https patch path does — without this guard, every global
+    // fetch() would attach a capture listener and pin a per-request
+    // body buffer even for non-provider hosts. Short-circuit to the
+    // original dispatcher BEFORE any capture-state allocation when
+    // shouldCapture says no; the negative half of the bug is the
+    // memory-pin on responseBodyChunks, not just the log spam.
+    const shouldAttach = shouldCapture(
+      syntheticReq as unknown as ClientRequest,
+      this.interceptor.providers,
+    );
+    if (!shouldAttach) {
+      return this.original.dispatch(options, handler);
+    }
 
     // Capture bookkeeping. attachCapture installs req.on('response', ...)
     // and req.on('error', ...) listeners — both route through synthetic
@@ -272,135 +287,15 @@ class WrappingDispatcher extends EventEmitter {
     // Capture the request body. undici hands plain string / Buffer /
     // Uint8Array bodies through verbatim, and wraps any other fetch body
     // shape (string, BufferSource, FormData, ReadableStream) in an
-    // AsyncIterable. The fully-buffered bodies capture synchronously
-    // before dispatch(); the AsyncIterable case requires a tee — undici's
-    // writer consumes the source iterator to write to the socket
-    // (preserving content-length integrity), and we cannot double-
-    // consume the upstream without losing body bytes and tripping
-    // UND_ERR_REQ_CONTENT_LENGTH_MISMATCH. A shared buffer is filled
-    // by an upstream drainer; both undici's writer (via a re-yielding
-    // iterator) and our capture branch read from it. For typical small
-    // fetch payloads the entire JSON arrives in one chunk before the
-    // HTTP lifecycle's onComplete fires, so emitLogEntry sees the body
-    // when it runs on the setImmediate scheduled by completeCapture.
-    const state = (syntheticReq as unknown as Tagged)[kCapture] as
-      CaptureState | undefined;
-    if (
-      state !== undefined &&
-      options.body !== undefined &&
-      options.body !== null
-    ) {
-      const body = options.body;
-      if (typeof body === 'string') {
-        state.requestBodyChunks.push(Buffer.from(body, 'utf8'));
-        state.capturedEnd = true;
-        state.finished = true;
-      } else if (Buffer.isBuffer(body) || body instanceof Uint8Array) {
-        state.requestBodyChunks.push(Buffer.from(body as Uint8Array));
-        state.capturedEnd = true;
-        state.finished = true;
-      } else if (typeof body === 'object' && Symbol.asyncIterator in body) {
-        // Tee the AsyncIterable so undici's writer and our capture both
-        // see every chunk without double-consuming the upstream. A single
-        // buffer is filled by the upstream drainer; both consumers wait
-        // on a shared waiter queue for chunks (or end-of-stream).
-        const src = body as AsyncIterable<unknown>;
-        const sharedChunks: Buffer[] = [];
-        let upstreamDone = false;
-        let upstreamError: unknown = null;
-        const waiters: Array<() => void> = [];
-        const signalWaiters = (): void => {
-          while (waiters.length > 0) {
-            const w = waiters.shift();
-            if (w !== undefined) {
-              w();
-            }
-          }
-        };
-
-        // Upstream drainer: fills sharedChunks, signals waiters.
-        void (async () => {
-          try {
-            for await (const chunk of src) {
-              if (typeof chunk === 'string') {
-                sharedChunks.push(Buffer.from(chunk, 'utf8'));
-              } else if (
-                Buffer.isBuffer(chunk) ||
-                chunk instanceof Uint8Array
-              ) {
-                sharedChunks.push(Buffer.from(chunk as Uint8Array));
-              }
-              signalWaiters();
-            }
-          } catch (err) {
-            upstreamError = err;
-          } finally {
-            upstreamDone = true;
-            signalWaiters();
-          }
-        })();
-
-        // Tee'd iterator for undici: yields each shared chunk exactly once.
-        // Cast at the assignment boundary because the discriminated
-        // AsyncIterable<any> shape from undici-types wants a top-level
-        // AsyncIterator<any,any,any>; our re-yielding generator object
-        // matches at runtime (next() is async; Symbol.asyncIterator is
-        // present on the OUTER generator) but TS only sees the inner
-        // `{ async next() }` shape because the outer literal was widened.
-        options.body = {
-          [Symbol.asyncIterator]() {
-            let idx = 0;
-            return {
-              async next(): Promise<IteratorResult<Uint8Array>> {
-                while (
-                  idx >= sharedChunks.length &&
-                  !upstreamDone &&
-                  !upstreamError
-                ) {
-                  await new Promise<void>((resolve) => {
-                    waiters.push(resolve);
-                  });
-                }
-                if (upstreamError) {
-                  // eslint-disable-next-line @typescript-eslint/only-throw-error
-                  throw upstreamError;
-                }
-                if (idx >= sharedChunks.length && upstreamDone) {
-                  return { done: true, value: undefined };
-                }
-                const value = sharedChunks[idx++];
-                if (value === undefined) {
-                  return { done: true, value: undefined };
-                }
-                return { done: false, value: value };
-              },
-              [Symbol.asyncIterator]() {
-                return this;
-              },
-            };
-          },
-        } as unknown as UndiciDispatchOptions['body'];
-
-        // Capture: wait for upstream to drain, then push the full buffer.
-        void (async () => {
-          while (!upstreamDone && !upstreamError) {
-            await new Promise<void>((resolve) => {
-              waiters.push(resolve);
-            });
-          }
-          if (sharedChunks.length > 0) {
-            state.requestBodyChunks.push(...sharedChunks);
-          }
-          state.capturedEnd = true;
-          state.finished = true;
-        })();
-      }
-    }
-
-    // The wrapped handler routes undici lifecycle callbacks into synthetic
-    // events on `syntheticReq` (error) or `syntheticRes` (data/end). The
-    // real listener graph is installed by attachCapture when 'response'
-    // fires, so onHeaders is the right place to mint syntheticRes.
+    // AsyncIterable. The string and Buffer/Uint8Array paths capture
+    // synchronously before dispatch() returns. The AsyncIterable path
+    // drains the upstream into a single Buffer inside the same async
+    // frame as this.original.dispatch — capture-before-dispatch —
+    // so onComplete (which fires after the wrappedHandler completes)
+    // cannot beat capture completion. No setTimeout, setImmediate,
+    // queueMicrotask, or Promise.resolve().then sits between the
+    // drain-await and the dispatch call; the await resolves on the
+    // microtask tick that triggers dispatch.
     let syntheticRes: EventEmitter | undefined;
     const wrappedHandler: UndiciDispatchHandlers = {
       onConnect: (abort) => {
@@ -447,7 +342,80 @@ class WrappingDispatcher extends EventEmitter {
         handler.onBodySent?.(chunkSize, totalBytesSent);
       },
     };
+    const state = (syntheticReq as unknown as Tagged)[kCapture] as
+      CaptureState | undefined;
+    if (
+      state !== undefined &&
+      options.body !== undefined &&
+      options.body !== null
+    ) {
+      const body = options.body;
+      if (typeof body === 'string') {
+        state.requestBodyChunks.push(Buffer.from(body, 'utf8'));
+        state.capturedEnd = true;
+        state.finished = true;
+      } else if (Buffer.isBuffer(body) || body instanceof Uint8Array) {
+        state.requestBodyChunks.push(Buffer.from(body as Uint8Array));
+        state.capturedEnd = true;
+        state.finished = true;
+      } else if (typeof body === 'object' && Symbol.asyncIterator in body) {
+        // Capture-before-dispatch: drain the AsyncIterable into a single
+        // Buffer BEFORE calling this.original.dispatch. The dispatch call
+        // runs only after the drain has populated state.requestBodyChunks
+        // and flipped capturedEnd/finished, so onComplete — wired only to
+        // the upstream handler and fired only after this.original.dispatch's
+        // wrappedHandler completes — cannot beat capture completion.
+        //
+        // Sequencing discipline: no setTimeout, setImmediate, queueMicrotask,
+        // or Promise.resolve().then sits between the drain-await and the
+        // dispatch call. The drain-await resolves on the microtask tick
+        // that triggers dispatch, in the same async frame.
+        //
+        // Synchronously: return true to undici so the call sequence from
+        // fetch() is honored; the actual underlying dispatch is deferred
+        // into the async IIFE that runs the drain.
+        void (async () => {
+          try {
+            const src = body as AsyncIterable<unknown>;
+            const chunks: Buffer[] = [];
+            for await (const chunk of src) {
+              if (typeof chunk === 'string') {
+                chunks.push(Buffer.from(chunk, 'utf8'));
+              } else if (
+                Buffer.isBuffer(chunk) ||
+                chunk instanceof Uint8Array
+              ) {
+                chunks.push(Buffer.from(chunk as Uint8Array));
+              } else {
+                chunks.push(Buffer.from(String(chunk), 'utf8'));
+              }
+            }
+            if (chunks.length > 0) {
+              state.requestBodyChunks.push(...chunks);
+            }
+            state.capturedEnd = true;
+            state.finished = true;
+            options.body = Buffer.concat(chunks);
+            this.original.dispatch(options, wrappedHandler);
+          } catch (err) {
+            // Upstream drain threw: finalize capture so emitLogEntry
+            // doesn't fire on stale state, then propagate via the
+            // dispatch handler's onError and the synthetic req's 'error'
+            // event (which completeCapture listens for).
+            state.capturedEnd = true;
+            state.finished = true;
+            const e = err instanceof Error ? err : new Error(String(err));
+            handler.onError?.(e);
+            syntheticReq.emit('error', e);
+          }
+        })();
+        return true;
+      }
+    }
 
+    // wrappedHandler was hoisted above so the AsyncIterable branch's
+    // drain-IIFE could reference it via closure (TypeScript can't
+    // track that the IIFE body runs after this point).
     return this.original.dispatch(options, wrappedHandler);
   }
 
@@ -656,7 +624,13 @@ function applyRequestTransform(
  * ```
  */
 export class Interceptor {
-  private readonly providers: (string | RegExp)[];
+  /** Providers the interceptor should capture traffic for. Public/read-
+   *  only so the wrapping undici dispatcher class can run the same
+   *  shouldCapture precheck the http/https patch path runs on the
+   *  prototype-replaced write/end methods. Mutating the array is a
+   *  no-op (the install-time copy below freezes the set) — re-create
+   *  the interceptor to change providers. */
+  public readonly providers: readonly (string | RegExp)[];
   private readonly capturePayloads: boolean;
   private readonly logger: Logger;
   private readonly tokenCounter: TokenCounter;
@@ -1421,12 +1395,38 @@ export function probeSseShape(
 // ---------------------------------------------------------------------------
 
 /**
+ * The synthetic ClientRequest's getHeader implementation.
+ *
+ * Returns the value of `name` from the lowercased header map. For the
+ * `host` key only, falls back to `hostHeader` when the header is not in
+ * the map — preserving the behaviour deriveUrl and reqHostname rely on.
+ *
+ * Returns `undefined` for any other absent key. The previous
+ * implementation fell back to `hostHeader` for ANY absent header, which
+ * was a header-lie trap: a request with no `content-length` would have
+ * silently returned a host-looking string instead of `undefined`. Today
+ * only `host` is read in-file, so the lie was invisible — but any
+ * downstream reader of any other header (content-length, content-type,
+ * transfer-encoding, …) would get garbage. The fix narrows the
+ * fallback to the single key elenwatch itself depends on.
+ */
+export function syntheticGetHeader(
+  name: string,
+  headersLower: ReadonlyMap<string, string>,
+  hostHeader: string,
+): string | undefined {
+  const v = headersLower.get(name.toLowerCase());
+  if (v !== undefined) return v;
+  return name.toLowerCase() === 'host' ? hostHeader : undefined;
+}
+
+/**
  * Whether a request's host should be captured. Exact host, subdomain
  * suffix, or a regex from the options.
  */
 export function shouldCapture(
   req: ClientRequest,
-  providers: (string | RegExp)[],
+  providers: readonly (string | RegExp)[],
 ): boolean {
   const hostname = reqHostname(req)?.toLowerCase();
   if (!hostname) {

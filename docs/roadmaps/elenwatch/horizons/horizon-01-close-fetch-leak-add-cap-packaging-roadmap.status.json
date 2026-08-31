@@ -1,0 +1,150 @@
+{
+  "roadmapFile": "docs/roadmaps/elenwatch/horizons/horizon-01-close-fetch-leak-add-cap-packaging-roadmap.json",
+  "roadmapTask": "Ship elenwatch 0.2.1 as a production-ready patch that closes the providers-filter leak in the fetch/undici path, adds a configurable maxBodyBytes cap, fixes the streamed-request-body race and the synthetic getHeader header-lie, and tightens packaging (single lockfile, build-time VERSION generation, removal of the dead sdk-fetch-shim from dist, separate ESM .d.ts types condition, lint-disable verification) — each fix landed with real positive and negative tests.",
+  "createdAt": "2026-08-31T08:21:05Z",
+  "updatedAt": "2026-08-31T09:05:00Z",
+  "roadmapRevision": 0,
+  "phases": [
+    {
+      "phaseId": "add-providers-filter-guard-fetch-path",
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-31T08:21:05Z",
+      "completedAt": "2026-08-31T08:30:00Z",
+      "gateRun": "npm run typecheck (exit 0); npm run lint (exit 0, 2 pre-existing otel warnings unchanged); npx jest --no-coverage (130 passed, 8 skipped [pre-existing SDK integration suites without keys])",
+      "gradeResult": {
+        "phaseId": "add-providers-filter-guard-fetch-path",
+        "dimensionScores": [
+          {
+            "dimensionId": "dispatcher-applies-providers-filter",
+            "score": 10,
+            "pass": true,
+            "evidence": "interceptor.ts:270-276 places const shouldAttach = shouldCapture(syntheticReq as unknown as ClientRequest, this.interceptor.providers) immediately above the existing attachCapture at line 282 and BEFORE any reference to state, requestBodyChunks, responseBodyChunks, or the [kCapture] symbol. shouldCapture is the single module-level export at line 1448 reused by the http/https patch path at lines 854, 875, 903. No /api\\.openai\\.com/ literal in src/interceptor.ts — host matching centralized."
+          },
+          {
+            "dimensionId": "no-capture-state-on-skipped-host",
+            "score": 10,
+            "pass": true,
+            "evidence": "interceptor.ts:274-276 returns this.original.dispatch(options, handler) before callerTrace, attachCapture, [kCapture] state lookup at line 301, and any requestBodyChunks/responseBodyChunks push — zero allocations on skip path. Negative test (interceptor.test.ts:1537-1577) asserts expect(entries).toHaveLength(0) post two-setImmediate flush. Gap noted but calibration permits 10: test does not literally probe [kCapture] on syntheticReq."
+          },
+          {
+            "dimensionId": "negative-fetch-test-in-default-suite",
+            "score": 10,
+            "pass": true,
+            "evidence": "interceptor.test.ts:1537-1577 lives in interceptor.test.ts (not integration file); providers:[/api\\.openai\\.com/]; fetches 127.0.0.1; flushes with two setImmediate; asserts expect(entries).toHaveLength(0). Same gap as above (no literal [kCapture] probe), calibration-permitted 10."
+          },
+          {
+            "dimensionId": "positive-fetch-still-captures",
+            "score": 10,
+            "pass": true,
+            "evidence": "interceptor.test.ts:1579-1611 uses providers:['127.0.0.1'], POSTs model=gpt-4o-mini body, flushes 2x setImmediate, asserts expect(entries).toHaveLength(1). Pred confirmed properly oriented (provider-host captured, non-provider skipped) — console-log emitted entry with url=http://127.0.0.1:50872/model=resilient from the live test run."
+          },
+          {
+            "dimensionId": "test-typecheck-lint-stay-green",
+            "score": 10,
+            "pass": true,
+            "evidence": "typecheck exit 0; lint exit 0 with only the 2 pre-existing otel.ts:38/otel.test.ts:101 unused-disable warnings (out-of-scope for this phase); 130 passed / 8 skipped (skips are pre-existing SDK integration suites). One new eslint-disable-next-line for the require('undici') peer probe mirrors the project's established integration-skip pattern; no @ts-ignore, no @ts-expect-error, no per-test it.skip/xit/test.todo."
+          }
+        ],
+        "overallPass": true
+      }
+    },
+    {
+      "phaseId": "fix-synthetic-getheader-lie",
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-31T08:36:00Z",
+      "completedAt": "2026-08-31T08:45:00Z",
+      "gateRun": "npm run typecheck (exit 0); npm run lint (exit 0, 2 pre-existing otel.ts:38 / otel.test.ts:101 warnings unchanged); npx jest --no-coverage (139 passed / 8 skipped [pre-existing undici-peer-less SDK integration suites])",
+      "gradeResult": {
+        "phaseId": "fix-synthetic-getheader-lie",
+        "dimensionScores": [
+          {
+            "dimensionId": "header-correctness-implementation",
+            "score": 10,
+            "pass": true,
+            "evidence": "interceptor.ts:1460-1468 defines exported `syntheticGetHeader` that reads `headersLower.get(name.toLowerCase())`, returns the value when defined, and only falls back to `hostHeader` when `name.toLowerCase() === 'host'` — otherwise returns the literal `undefined`; the dispatcher at interceptor.ts:258-260 delegates to this helper, so no absent non-host key path can leak `hostHeader`, an empty string, or `null`. The 10-vs-9 distinction: the fix was extracted into a pure module-level exported helper with full JSDoc documenting the contract and the rationale, making the invariant a single readable source-level truth instead of an inline expression a reviewer has to mentally decompose."
+          },
+          {
+            "dimensionId": "host-fallback-preservation",
+            "score": 10,
+            "pass": true,
+            "evidence": "The host fallback is preserved exactly for the lowercase `host` key (interceptor.ts:1467); the tests at interceptor.test.ts:918, :925, and :934 assert all three required behaviours — `getHeader('host')` returns hostHeader `api.openai.com:443` when input headers lack host, returns the explicit header `override.example.com:8080` when one is supplied, and resolves case-insensitively for `Host`/`HOST`. The 10-vs-9 distinction: the rubric's failureExamples flag a case-sensitivity regression (caller passing `getHeader('Host')` getting `undefined`) as a real risk, and the implementation explicitly covers and tests that case — going beyond the minimum single-key fallback check."
+          },
+          {
+            "dimensionId": "header-correctness-test-existence",
+            "score": 10,
+            "pass": true,
+            "evidence": "interceptor.test.ts:865-950 introduces a `describe('synthetic getHeader returns undefined for absent non-host keys')` block with 9 tests built against a `buildSynthetic` helper that constructs the same fake ClientRequest shape as interceptor.ts:246-261, asserting absent content-length/content-type/transfer-encoding each return `undefined`, present content-length returned verbatim, case-insensitive present-header matching, the host fallback case, the explicit-host-wins case, case-insensitive host matching, and an end-to-end deriveUrl assertion. The 10-vs-9 distinction: the rubric's passCriteria require at minimum one absent-non-host assertion plus the two host cases; the deliverable covers three distinct absent-non-host keys and adds an end-to-end deriveUrl test, so it exercises the consumer that actually depends on the host fallback rather than only the helper in isolation."
+          },
+          {
+            "dimensionId": "regression-safety",
+            "score": 10,
+            "pass": true,
+            "evidence": "All three gates green with zero new diagnostics: `npm run typecheck` exit 0, `npm run lint` exit 0 with only the two pre-existing otel.ts:38 / otel.test.ts:101 warnings (out-of-scope), and `npx jest --no-coverage` reports 139 passed / 8 skipped / 0 failed (the 8 skipped are pre-existing undici-peer-less SDK integration suites unrelated to this phase); the test count grew from 130 to 139, matching the 9 new tests added, and no new `// @ts-ignore`, `eslint-disable`, `.skip`, or `.todo` was introduced. The 10-vs-9 distinction: skipped tests are explicitly verified as pre-existing rather than added by this phase, so the green status reflects zero regression surface introduced by the change rather than a green status with quiet skips."
+          }
+        ],
+        "overallPass": true
+      }
+    },
+    {
+      "phaseId": "fix-streamed-request-body-race",
+      "status": "done",
+      "attempts": 1,
+      "startedAt": "2026-08-31T08:55:00Z",
+      "completedAt": "2026-08-31T09:05:00Z",
+      "gateRun": "npm run typecheck (exit 0); npm run lint (exit 0, 2 pre-existing otel.ts:38 / otel.test.ts:101 warnings unchanged); npx jest --no-coverage (141 passed / 8 skipped [pre-existing undici-peer-less SDK integration suites])",
+      "gradeResult": {
+        "phaseId": "fix-streamed-request-body-race",
+        "dimensionScores": [
+          {
+            "dimensionId": "capture-before-dispatch-in-source",
+            "score": 10,
+            "pass": true,
+            "evidence": "interceptor.ts:361-413 drains the AsyncIterable into chunks, pushes them into state.requestBodyChunks, sets state.capturedEnd=true and state.finished=true, rewrites options.body = Buffer.concat(chunks), and only then calls this.original.dispatch(options, wrappedHandler) — all inside one IIFE, no timing primitives between drain-await and dispatch (grep confirms zero setTimeout/setImmediate/queueMicrotask/Promise.resolve().then in this branch). The catch arm likewise finalizes capturedEnd/finished before propagating the error via handler.onError + syntheticReq.emit('error'). A 10 has, beyond the await-then-dispatch ordering, the explicit options.body = Buffer.concat(chunks) substitution that guarantees the upstream dispatcher cannot re-iterate a still-draining AsyncIterable — observable in source at line 398."
+          },
+          {
+            "dimensionId": "deterministic-race-test",
+            "score": 9,
+            "pass": true,
+            "evidence": "interceptor.test.ts:1748-1801 constructs a ReadableStream whose pull yields each of 3 chunks on a separate microtask boundary (await Promise.resolve()), uploads them via fetch with duplex:'half', and asserts JSON.stringify(maskedRequestBody) === sourceJson byte-equal — hermetic, no sleep/setTimeout/setImmediate/fake timers for race proof, runs well under 100 ms. The ordering invariant is implicit in the byte-equality assertion (under the old tee'd code the dispatch would race past the partial capture and the body assertion would fail); an explicit dispatch-spy would push this to 10."
+          },
+          {
+            "dimensionId": "positive-and-negative-coverage",
+            "score": 8,
+            "pass": true,
+            "evidence": "Exactly one sharp positive (3-chunk ReadableStream body round-trips byte-equal through maskedRequestBody) and one sharp negative (ReadableStream whose second pull calls controller.error, asserting fetch rejects AND any emitted entry has e.error defined with no partial-success body), matching the rubric's '8 = one sharp positive + one sharp negative' band."
+          },
+          {
+            "dimensionId": "existing-checks-stay-green",
+            "score": 10,
+            "pass": true,
+            "evidence": "typecheck exit 0, lint exit 0 (only the 2 pre-existing otel.ts:38 / otel.test.ts:101 unused-disable warnings, unrelated to this phase), jest 141 passed / 8 skipped / 0 failed (was 139, +2 from new tests); no new @ts-ignore/@ts-expect-error/eslint-disable/.skip(/.todo(/xit(/xdescribe( introduced — diff grep clean."
+          },
+          {
+            "dimensionId": "dispatch-return-type-once-fired",
+            "score": 8,
+            "pass": true,
+            "evidence": "tsc passes without widened signatures (DispatchHandlers return shape unchanged), and the existing state.emitted exactly-once guard at interceptor.ts:1136-1139 structurally guarantees single-fire for both completeCapture entry points (response-end and error) — callers compile and onComplete fires once. No new explicit counter test was added for single-fire, which is what would lift this to 10."
+          }
+        ],
+        "overallPass": true
+      }
+    },
+    {
+      "phaseId": "add-maxbodybytes-cap-and-body-dropped-event",
+      "status": "not-started",
+      "attempts": 0
+    },
+    {
+      "phaseId": "tighten-package-metadata-lockfile-and-types",
+      "status": "not-started",
+      "attempts": 0
+    },
+    {
+      "phaseId": "add-build-time-version-exclude-shim-and-tests",
+      "status": "not-started",
+      "attempts": 0
+    }
+  ]
+}

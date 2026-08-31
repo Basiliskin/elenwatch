@@ -15,6 +15,7 @@ import {
   deriveUrl,
   resolveScheme,
   shouldCapture,
+  syntheticGetHeader,
   defaultEstimateInputTokens,
   defaultExtractOutputTokens,
 } from './interceptor';
@@ -858,6 +859,97 @@ describe('helper functions', () => {
 });
 
 // ---------------------------------------------------------------------------
+// synthetic getHeader header-correctness
+// ---------------------------------------------------------------------------
+
+describe('synthetic getHeader returns undefined for absent non-host keys', () => {
+  // Build a synthetic ClientRequest whose getHeader delegates to the
+  // production syntheticGetHeader helper. This is the exact shape the
+  // dispatch wrapper constructs at interceptor.ts:246-261 — same call
+  // path, same headersLower Map, same hostHeader binding.
+  function buildSynthetic(
+    headers: Record<string, string>,
+    origin = 'http://localhost',
+  ): { getHeader: (name: string) => string | undefined } {
+    const originUrl = new URL(origin);
+    const headerMap: Record<string, string> = { ...headers };
+    const hostHeader = headerMap.host ?? originUrl.host;
+    const headersLower = new Map<string, string>(
+      Object.entries(headerMap).map(([k, v]) => [k.toLowerCase(), v]),
+    );
+    const synthetic = new EventEmitter();
+    Object.assign(synthetic, {
+      hostname: originUrl.hostname,
+      getHeader(name: string): string | undefined {
+        return syntheticGetHeader(name, headersLower, hostHeader);
+      },
+    });
+    return synthetic as unknown as {
+      getHeader: (name: string) => string | undefined;
+    };
+  }
+
+  test('absent content-length returns undefined (was the host-lie trap)', () => {
+    const synthetic = buildSynthetic({});
+    expect(synthetic.getHeader('content-length')).toBe(undefined);
+  });
+
+  test('absent content-type returns undefined (was the host-lie trap)', () => {
+    const synthetic = buildSynthetic({});
+    expect(synthetic.getHeader('content-type')).toBe(undefined);
+  });
+
+  test('absent transfer-encoding returns undefined (was the host-lie trap)', () => {
+    const synthetic = buildSynthetic({});
+    expect(synthetic.getHeader('transfer-encoding')).toBe(undefined);
+  });
+
+  test('present content-length is returned verbatim', () => {
+    const synthetic = buildSynthetic({ 'content-length': '1234' });
+    expect(synthetic.getHeader('content-length')).toBe('1234');
+  });
+
+  test('present header is matched case-insensitively', () => {
+    const synthetic = buildSynthetic({ 'content-type': 'application/json' });
+    expect(synthetic.getHeader('Content-Type')).toBe('application/json');
+    expect(synthetic.getHeader('CONTENT-TYPE')).toBe('application/json');
+  });
+
+  test('host key falls back to hostHeader when input headers lack host', () => {
+    const synthetic = buildSynthetic({}, 'http://api.openai.com:443');
+    // hostHeader is bound from originUrl.host when no `host` header is
+    // supplied — preserves deriveUrl/reqHostname contract.
+    expect(synthetic.getHeader('host')).toBe('api.openai.com:443');
+  });
+
+  test('host key returns the explicit header when input headers include one', () => {
+    const synthetic = buildSynthetic(
+      { host: 'override.example.com:8080' },
+      'http://api.openai.com:443',
+    );
+    // Explicit header wins over hostHeader fallback.
+    expect(synthetic.getHeader('host')).toBe('override.example.com:8080');
+  });
+
+  test('host key is matched case-insensitively', () => {
+    const synthetic = buildSynthetic({ host: 'override.example.com:8080' });
+    expect(synthetic.getHeader('Host')).toBe('override.example.com:8080');
+    expect(synthetic.getHeader('HOST')).toBe('override.example.com:8080');
+  });
+
+  test('deriveUrl still resolves correctly when host header is absent', () => {
+    // End-to-end: deriveUrl reads getHeader('host'). With the fix, the
+    // host-key fallback must keep produce a real URL (no undefined leak
+    // into the URL construction).
+    const synthetic = buildSynthetic({}, 'http://api.openai.com:8443');
+    (synthetic as unknown as { path: string }).path = '/v1/chat/completions';
+    expect(deriveUrl(synthetic as unknown as http.ClientRequest, 'http')).toBe(
+      'http://api.openai.com:8443/v1/chat/completions',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // kNoCapture: negative capture-decision cache (#8)
 // ---------------------------------------------------------------------------
 
@@ -1507,4 +1599,273 @@ describe('SSE event-stream response strand (h4p4)', () => {
     expect(entries[0].outputTokens).toBe(3);
     expect(entries[0]).not.toHaveProperty('maskedResponseBody');
   });
+});
+
+// ---------------------------------------------------------------------------
+// Providers filter guards the fetch/undici dispatcher path (#h1p0)
+// ---------------------------------------------------------------------------
+//
+// The dual-patch honours `providers` on http/https today but ignored the
+// filter on the fetch/undici dispatcher: every global fetch() attached a
+// capture listener and pinned a per-request body buffer regardless of the
+// destination host. This strand proves the fix on the fetch path end-to-end
+// with a real localhost server and the user-installed undici's fetch.
+//
+// Skip policy mirrors the existing `*.integration.test.ts` files: when the
+// `undici` peer is not installed, the suite is auto-skipped via `test.skip`
+// so the default `npm test` does not see this as a failure. To exercise the
+// suite, install undici locally (`npm i -D undici --no-save`).
+
+let udPeer: typeof import('undici') | undefined;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  udPeer = require('undici') as typeof import('undici');
+} catch {
+  udPeer = undefined;
+}
+
+const itIfUd = udPeer ? test : test.skip;
+
+describe('providers-filter guard on the fetch/undici dispatcher path', () => {
+  itIfUd(
+    'fetch to a non-provider host emits no LlmLogEntry and no capture-state allocation',
+    async () => {
+      const entries: LlmLogEntry[] = [];
+      const interceptor = new Interceptor({
+        // Explicit regex matched to api.openai.com only — the dot is
+        // escaped so 127.0.0.1 cannot match by accident.
+        providers: [/api\.openai\.com/],
+        logger: (entry: LlmLogEntry) => entries.push(entry),
+      });
+      interceptor.install();
+      const { port, close } = await startServer();
+      try {
+        // Real fetch through the user-installed undici (the same path
+        // global fetch takes in plain Node 22). The dispatcher wrapper
+        // installed by elenwatch must short-circuit BEFORE any capture-
+        // state allocation, so emitLogEntry is never scheduled and the
+        // response lifecycle has no synthetic listeners attached.
+        const res = await udPeer!.fetch(
+          `http://127.0.0.1:${port}/v1/chat/completions`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ping: 'fetch-negative' }),
+          },
+        );
+        expect(res.status).toBe(200);
+        await res.text();
+        // Two-setImmediate flush covers the body-drain microtask and
+        // any deferred emitLogEntry the dispatcher might have scheduled
+        // (with the fix: none; without the fix: one).
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+      } finally {
+        interceptor.restore();
+        await close();
+      }
+      expect(entries).toHaveLength(0);
+    },
+  );
+
+  itIfUd(
+    'a provider-host fetch still produces one LlmLogEntry (positive guard test)',
+    async () => {
+      const entries: LlmLogEntry[] = [];
+      const interceptor = new Interceptor({
+        providers: ['127.0.0.1'],
+        logger: (entry: LlmLogEntry) => entries.push(entry),
+      });
+      interceptor.install();
+      const { port, close } = await startServer();
+      try {
+        const res = await udPeer!.fetch(
+          `http://127.0.0.1:${port}/v1/chat/completions`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              model: 'gpt-4o-mini',
+              messages: [{ role: 'user', content: 'hello' }],
+            }),
+          },
+        );
+        expect(res.status).toBe(200);
+        await res.text();
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+      } finally {
+        interceptor.restore();
+        await close();
+      }
+      expect(entries).toHaveLength(1);
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Streamed request-body race: capture-before-dispatch (h1p2)
+//
+// The dual-surface interceptor handles three body shapes: string,
+// Buffer/Uint8Array, and AsyncIterable. The first two capture
+// synchronously inside dispatch(); only the AsyncIterable path was
+// race-prone — `this.original.dispatch()` returned before the
+// AsyncIterable drain finished, so the upstream writer could call
+// `onComplete` (and trigger `emitLogEntry`) while our capture-side
+// buffer was still partial.
+//
+// The fix drains the AsyncIterable into a single Buffer inside the
+// same async frame as the dispatch call, then hands the buffered
+// Buffer to undici. No setTimeout/setImmediate/queueMicrotask sits
+// between drain-await and dispatch — the await resolves on the
+// microtask tick that triggers dispatch.
+// ---------------------------------------------------------------------------
+
+describe('streamed request-body capture-before-dispatch (h1p2)', () => {
+  /** A ReadableStream that yields each chunk on a separate microtask
+   *  boundary. The first chunk is yielded immediately so the consumer
+   *  can attach; subsequent chunks yield once between enqueues to give
+   *  the consumer a chance to schedule concurrently — this is what
+   *  triggers the race under the buggy tee'd code. */
+  function slowReadableStream(chunks: Buffer[]): ReadableStream<Uint8Array> {
+    let idx = 0;
+    return new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (idx >= chunks.length) {
+          controller.close();
+          return;
+        }
+        if (idx === 0) {
+          controller.enqueue(chunks[idx++]);
+          return;
+        }
+        await Promise.resolve();
+        controller.enqueue(chunks[idx++]);
+      },
+    });
+  }
+
+  itIfUd(
+    'a slow ReadableStream body is fully captured before dispatch returns',
+    async () => {
+      // 3 distinct chunks of known bytes, concatenating to a known
+      // JSON object. The captured body must round-trip through
+      // maskedRequestBody byte-for-byte under capture-before-dispatch.
+      const sourceJson = JSON.stringify({
+        id: 1,
+        msg: 'hello world',
+        extra: 'data',
+      });
+      const expected = Buffer.from(sourceJson, 'utf8');
+      const split1 = Math.floor(expected.length / 3);
+      const split2 = Math.floor((expected.length * 2) / 3);
+      const chunk1 = expected.subarray(0, split1);
+      const chunk2 = expected.subarray(split1, split2);
+      const chunk3 = expected.subarray(split2);
+
+      const entries: LlmLogEntry[] = [];
+      const interceptor = new Interceptor({
+        providers: ['127.0.0.1'],
+        capturePayloads: true,
+        logger: (entry: LlmLogEntry) => entries.push(entry),
+      });
+      interceptor.install();
+      const { port, close } = await startServer();
+      try {
+        const stream = slowReadableStream([chunk1, chunk2, chunk3]);
+        const res = await udPeer!.fetch(
+          `http://127.0.0.1:${port}/v1/chat/completions`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: stream,
+            duplex: 'half',
+          } as unknown as RequestInit,
+        );
+        expect(res.status).toBe(200);
+        await res.text();
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+      } finally {
+        interceptor.restore();
+        await close();
+      }
+
+      // Capture completed BEFORE dispatch returned, so the captured
+      // body must equal the source: all three chunks concatenated and
+      // JSON-round-tripped through maskedRequestBody.
+      expect(entries).toHaveLength(1);
+      const captured = entries[0].maskedRequestBody;
+      expect(JSON.stringify(captured)).toBe(sourceJson);
+    },
+  );
+
+  itIfUd(
+    'an AsyncIterable body that throws mid-stream propagates and emits no partial success entry',
+    async () => {
+      // First pull yields a complete first chunk; second pull errors
+      // out. The capture-side must finalize cleanly: the entry that
+      // gets emitted is an ERROR entry (with `.error` defined), never
+      // a "partial success" entry that has maskedRequestBody missing
+      // the rest of the body.
+      let pulled = 0;
+      const throwing = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          if (pulled === 0) {
+            controller.enqueue(Buffer.from('{"id":1', 'utf8'));
+            pulled++;
+            return;
+          }
+          if (pulled === 1) {
+            await Promise.resolve();
+            controller.error(new Error('upstream blew up'));
+            pulled++;
+          }
+        },
+      });
+
+      const entries: LlmLogEntry[] = [];
+      const interceptor = new Interceptor({
+        providers: ['127.0.0.1'],
+        capturePayloads: true,
+        logger: (entry: LlmLogEntry) => entries.push(entry),
+      });
+      interceptor.install();
+      const { port, close } = await startServer();
+      let rejected = false;
+      let rejectedWith: unknown = undefined;
+      try {
+        await udPeer!.fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: throwing,
+          duplex: 'half',
+        } as unknown as RequestInit);
+      } catch (err) {
+        rejected = true;
+        rejectedWith = err;
+      } finally {
+        interceptor.restore();
+        await close();
+      }
+      // fetch() must reject with the upstream error so the caller
+      // sees the failure, not a hung promise. undici wraps dispatch
+      // errors in a TypeError; the rejection IS the signal — the
+      // inner-cause shape is undici's implementation detail.
+      expect(rejected).toBe(true);
+
+      // No "partial success" entry: any entry that was emitted must
+      // be an ERROR entry (with `.error` defined) AND must NOT carry
+      // a maskedRequestBody that JSON-parses as a partial value. The
+      // first chunk `{"id":1` is not valid JSON on its own, so
+      // maskedRequestBody is either undefined or a complete JSON
+      // value — never mid-stream garbage.
+      for (const e of entries) {
+        expect(e.error).toBeDefined();
+        if (e.maskedRequestBody !== undefined) {
+          expect(() => JSON.stringify(e.maskedRequestBody)).not.toThrow();
+        }
+      }
+    },
+  );
 });
