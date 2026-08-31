@@ -1,6 +1,6 @@
 {
   "name": "elenwatch",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Near-zero-latency interception of in-process LLM provider HTTP/HTTPS traffic with pluggable loggers (incl. OTEL), per-provider parsers, request/response transformers, and payload redaction.",
   "author": "Dimitry Katz <dimitry.kazt@gmail.com>",
   "license": "MIT",
@@ -20,7 +20,10 @@
   "types": "./dist/cjs/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/cjs/index.d.ts",
+      "types": {
+        "import": "./dist/esm/index.d.ts",
+        "require": "./dist/cjs/index.d.ts"
+      },
       "import": "./dist/esm/index.js",
       "require": "./dist/cjs/index.js"
     },
@@ -35,12 +38,23 @@
   "engines": {
     "node": ">=18"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Basiliskin/elenwatch.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Basiliskin/elenwatch/issues"
+  },
+  "homepage": "https://github.com/Basiliskin/elenwatch#readme",
+  "packageManager": "pnpm@10.12.1",
   "scripts": {
     "clean": "rimraf dist",
-    "prebuild": "npm run clean",
+    "build-version": "node scripts/build-version.mjs",
+    "prebuild": "npm run clean && npm run build-version",
     "build": "tsc -p tsconfig.cjs.json && tsc -p tsconfig.esm.json && npm run postbuild",
     "postbuild": "node scripts/postbuild.mjs",
     "lint": "eslint \"src/**/*.ts\"",
+    "pretest": "npm run build",
     "test": "jest --passWithNoTests",
     "test:coverage": "jest --coverage",
     "typecheck": "tsc -p tsconfig.json --noEmit"

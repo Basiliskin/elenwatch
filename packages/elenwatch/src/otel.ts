@@ -35,7 +35,7 @@ interface OtelHandle {
 
 let otel: OtelHandle | undefined;
 try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mod = require('@opentelemetry/api') as OtelApi;
   otel = { trace: mod.trace, SpanStatusCode: mod.SpanStatusCode };
 } catch {

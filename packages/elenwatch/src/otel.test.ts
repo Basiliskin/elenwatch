@@ -98,7 +98,7 @@ describe('otelSpanLogger', () => {
       jest.doMock('@opentelemetry/api', () => {
         throw new Error('peer not installed');
       });
-      // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const mod = require('./otel') as typeof import('./otel');
 
       expect(() => mod.otelSpanLogger(sampleEntry)).not.toThrow();

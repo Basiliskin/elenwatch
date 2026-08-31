@@ -30,4 +30,4 @@ export type {
   RequestTransformer,
   ResponseTransformer,
 } from './options';
-export const VERSION = '0.2.0';
+export { VERSION } from './version';
