@@ -27,6 +27,13 @@
  * undici wrapping dispatcher's handler does the same — synthetic events
  * are emitted into the captured listener graph and `emitLogEntry` runs
  * inside a setImmediate.
+ *
+ * Exception — buffer-and-hold: when a `requestTransform` is configured,
+ * captured requests withhold their body chunks from the socket until
+ * end(), so the transform can run once over the full body and be written
+ * in a single terminal call (see holdWrite/holdEnd). Streamed fetch()
+ * bodies are never buffered: observeRequestBody is a pull-through
+ * generator with exact backpressure.
  */
 
 import { EventEmitter } from 'node:events';
@@ -47,6 +54,7 @@ import {
   parseCall,
 } from './provider-parser';
 import { Logger, consoleLogger } from './logger';
+import { peerRequire } from './peer-require';
 import { RedactionConfig, redact } from './redaction';
 import {
   BodyDroppedInfo,
@@ -80,16 +88,17 @@ const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024;
 // dual-patch in install()/restore() uses to capture global fetch traffic.
 // When the peer is absent, this stays undefined and install() silently
 // skips the undici side (preserving zero-hard-deps public surface).
-// Same lazy-require pattern as src/otel.ts lines 29-44. The undici-types
-// module shim at src/types-undici.d.ts makes `typeof import('undici')`
-// resolve to undici-types' shape at type-check time even when the undici
-// package is not installed.
+// Same lazy-require pattern as src/otel.ts. Loaded through `peerRequire` so
+// resolution works in both the CJS and the ESM build; a bare `require` here
+// throws `require is not defined` under ESM and is misread as "peer absent".
+// The undici-types module shim at src/types-undici.d.ts makes
+// `typeof import('undici')` resolve to undici-types' shape at type-check
+// time even when the undici package is not installed.
 type UndiciApi = typeof import('undici');
 
 let undici: UndiciApi | undefined;
 try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  undici = require('undici') as UndiciApi;
+  undici = peerRequire('undici') as UndiciApi;
 } catch {
   // Peers not installed — leave `undici` undefined so install()/restore()
   // silently skip the undici side.
@@ -141,6 +150,24 @@ interface CaptureState {
    *  per (host, direction). Kept separate for request and response so a
    *  request trip does not silence the response path and vice versa. */
   bodyDropped: { request: boolean; response: boolean };
+  /** Buffer-and-hold mode (http/https path with a requestTransform
+   *  configured): every write is withheld from the wire and its bytes
+   *  collected here, UNCAPPED (wire fidelity — maxBodyBytes only ever
+   *  truncates the capture copy). At end() the full body is transformed
+   *  once and written in a single terminal call, so headers flush only
+   *  after Content-Length is final. `undefined` means hold mode never
+   *  started for this request (no transform, or headers were already
+   *  flushed at the first body byte — the degraded passthrough path). */
+  heldWireChunks?: Buffer[];
+  /** Fetch-path passthrough body observer: true from dispatch until the
+   *  wrapping async generator's finally has run (normal completion,
+   *  upstream throw, and undici cancellation all clear it). While true,
+   *  a SUCCESS terminal in completeCapture is deferred so the log entry
+   *  can never carry a partially-captured request body. */
+  requestStreamPending?: boolean;
+  /** Set when a success terminal arrived while requestStreamPending —
+   *  the generator's finally re-enters completeCapture. */
+  deferredTerminal?: boolean;
 }
 
 const kCapture = Symbol('elenwatch.capture');
@@ -315,13 +342,12 @@ class WrappingDispatcher extends EventEmitter {
     // shape (string, BufferSource, FormData, ReadableStream) in an
     // AsyncIterable. The string and Buffer/Uint8Array paths capture
     // synchronously before dispatch() returns. The AsyncIterable path
-    // drains the upstream into a single Buffer inside the same async
-    // frame as this.original.dispatch — capture-before-dispatch —
-    // so onComplete (which fires after the wrappedHandler completes)
-    // cannot beat capture completion. No setTimeout, setImmediate,
-    // queueMicrotask, or Promise.resolve().then sits between the
-    // drain-await and the dispatch call; the await resolves on the
-    // microtask tick that triggers dispatch.
+    // wraps the caller's stream in a passthrough async generator
+    // (observeRequestBody): undici pulls the generator, the generator
+    // pulls upstream — exact backpressure, no full-body buffering, no
+    // dispatch deferral — while copying each chunk into the capped
+    // capture buffer as a side effect. The wire always gets the
+    // caller's bytes untouched.
     let syntheticRes: EventEmitter | undefined;
     const wrappedHandler: UndiciDispatchHandlers = {
       onConnect: (abort) => {
@@ -396,64 +422,29 @@ class WrappingDispatcher extends EventEmitter {
         state.capturedEnd = true;
         state.finished = true;
       } else if (typeof body === 'object' && Symbol.asyncIterator in body) {
-        // Capture-before-dispatch: drain the AsyncIterable into a single
-        // Buffer BEFORE calling this.original.dispatch. The dispatch call
-        // runs only after the drain has populated state.requestBodyChunks
-        // and flipped capturedEnd/finished, so onComplete — wired only to
-        // the upstream handler and fired only after this.original.dispatch's
-        // wrappedHandler completes — cannot beat capture completion.
+        // Passthrough observer. Emission ordering: requestStreamPending
+        // makes completeCapture defer a SUCCESS terminal (onComplete)
+        // until the generator's finally has run, so the entry can never
+        // carry a partially-captured request body. An ERROR terminal
+        // emits immediately — a failed request's body will never
+        // complete (and on some error paths undici never starts the
+        // generator at all, so waiting would defer forever); the error
+        // entry is allowed to carry the partial capture.
         //
-        // Sequencing discipline: no setTimeout, setImmediate, queueMicrotask,
-        // or Promise.resolve().then sits between the drain-await and the
-        // dispatch call. The drain-await resolves on the microtask tick
-        // that triggers dispatch, in the same async frame.
-        //
-        // Synchronously: return true to undici so the call sequence from
-        // fetch() is honored; the actual underlying dispatch is deferred
-        // into the async IIFE that runs the drain.
-        void (async () => {
-          try {
-            const src = body as AsyncIterable<unknown>;
-            // Two independent accumulators. `wireChunks` collects every
-            // byte drained from the source with no cap check, so the body
-            // sent upstream is always the caller's full body. `captureChunks`
-            // goes through appendChunk, which truncates at maxBodyBytes and
-            // flips bodyDropped / fires onBodyDropped — the log copy, and
-            // only the log copy, is what a tripped cap shortens.
-            const wireChunks: Buffer[] = [];
-            const captureChunks: Buffer[] = [];
-            for await (const chunk of src) {
-              if (chunk !== null && chunk !== undefined) {
-                wireChunks.push(chunkToBuffer(chunk, undefined));
-              }
-              appendChunk(captureChunks, chunk, undefined, reqCapCtx);
-            }
-            if (captureChunks.length > 0) {
-              state.requestBodyChunks.push(...captureChunks);
-            }
-            state.capturedEnd = true;
-            state.finished = true;
-            options.body = Buffer.concat(wireChunks);
-            this.original.dispatch(options, wrappedHandler);
-          } catch (err) {
-            // Upstream drain threw: finalize capture so emitLogEntry
-            // doesn't fire on stale state, then propagate via the
-            // dispatch handler's onError and the synthetic req's 'error'
-            // event (which completeCapture listens for).
-            state.capturedEnd = true;
-            state.finished = true;
-            const e = err instanceof Error ? err : new Error(String(err));
-            handler.onError?.(e);
-            syntheticReq.emit('error', e);
-          }
-        })();
-        return true;
+        // The flag is set eagerly (a generator body runs nothing until
+        // its first pull); the generator's finally clears it on normal
+        // completion, upstream throw, and undici cancellation alike.
+        state.requestStreamPending = true;
+        options.body = observeRequestBody(
+          body as AsyncIterable<unknown>,
+          state,
+          reqCapCtx,
+          syntheticReq as unknown as ClientRequest,
+          this.interceptor,
+        ) as unknown as typeof options.body;
       }
     }
 
-    // wrappedHandler was hoisted above so the AsyncIterable branch's
-    // drain-IIFE could reference it via closure (TypeScript can't
-    // track that the IIFE body runs after this point).
     return this.original.dispatch(options, wrappedHandler);
   }
 
@@ -635,12 +626,16 @@ function appendChunk(
         cap: capCtx.cap,
       };
       // Operator-facing log line so the trip is visible without a custom
-      // listener; the structured callback still fires for programmatic
-      // observers. console.error not console.log — body-cap events are
-      // operations signals, not normal log entries.
-      console.error(
-        `elenwatch: dropping body for host ${info.host}, ${buf.byteLength} bytes exceeds maxBodyBytes ${info.cap} (${info.direction})`,
-      );
+      // listener. Only emitted when no onBodyDropped callback is configured:
+      // a caller who supplied the callback has taken ownership of the signal,
+      // so the extra stderr write is just noise in their logs. console.error
+      // not console.log — body-cap events are operations signals, not normal
+      // log entries.
+      if (capCtx.onDropped === undefined) {
+        console.error(
+          `elenwatch: dropping body for host ${info.host}, ${buf.byteLength} bytes exceeds maxBodyBytes ${info.cap} (${info.direction})`,
+        );
+      }
       try {
         capCtx.onDropped?.(info);
       } catch {
@@ -653,59 +648,169 @@ function appendChunk(
   chunks.push(buf);
 }
 
+/**
+ * Passthrough request-body observer for the fetch/undici path.
+ *
+ * Wraps the caller's AsyncIterable body in an async generator that pulls
+ * upstream only when undici pulls it (exact backpressure — the request
+ * streams at wire speed, never buffered whole), copies each chunk into
+ * the capped capture buffer as a side effect, and yields the caller's
+ * bytes to the wire untouched. This is the tee-like split done right: a
+ * `ReadableStream.tee()` would let the capture branch drain the source at
+ * memory speed and queue the whole body for the wire branch unboundedly;
+ * a pull-through generator has exactly one consumer driving the source.
+ *
+ * The `finally` runs on normal completion, on an upstream throw (which
+ * propagates into undici and fails the request via onError), and when
+ * undici cancels the body iterable (`return()`), so the pending flag
+ * cannot stay stuck once the generator has started. A deferred success
+ * terminal parked by completeCapture is re-entered from here.
+ */
+async function* observeRequestBody(
+  src: AsyncIterable<unknown>,
+  state: CaptureState,
+  capCtx: {
+    state: CaptureState;
+    direction: 'request' | 'response';
+    cap: number;
+    onDropped: ((info: BodyDroppedInfo) => void) | undefined;
+  },
+  syntheticReq: ClientRequest,
+  interceptor: Interceptor,
+): AsyncGenerator<Buffer> {
+  try {
+    for await (const chunk of src) {
+      appendChunk(state.requestBodyChunks, chunk, undefined, capCtx);
+      if (chunk !== null && chunk !== undefined) {
+        yield chunkToBuffer(chunk, undefined);
+      }
+    }
+  } finally {
+    state.requestStreamPending = false;
+    state.capturedEnd = true;
+    state.finished = true;
+    if (state.deferredTerminal === true) {
+      state.deferredTerminal = false;
+      interceptor.completeCapture(syntheticReq, state);
+    }
+  }
+}
+
 /** Extract the optional encoding argument from a write/end arg list. */
 function encodingArg(args: unknown[]): string | undefined {
   return typeof args[1] === 'string' ? args[1] : undefined;
 }
 
 /**
- * Run the request transform exactly once over the full concatenated capture
- * at the terminal write/end, per the slice-spec ADR. When the transformer
- * actually replaces the body, `args[0]` is rewritten so the transformed bytes
- * hit the wire, the log entry reflects them, and Content-Length is set from
- * Buffer.byteLength(..., 'utf8') — but ONLY when a Content-Length header is
- * already present (chunked / gzip / absent-header requests pass through
- * untouched, and a no-op/undefined transform never rewrites the header).
+ * Buffer-and-hold, the write half. When a requestTransform is configured,
+ * body chunks are withheld from the wire (collected uncapped in
+ * `state.heldWireChunks`) so the transform can run once over the FULL body
+ * at end() — a chunk forwarded early can never be un-sent, which is
+ * exactly how the old rewrite-args-at-end approach corrupted multi-write
+ * requests (earlier chunks already on the wire + the full transformed body
+ * written again at end) and crashed on setHeader after headers flushed.
+ *
+ * Returns true when the chunk was withheld (the wrapper must NOT forward
+ * to the original write, must invoke the caller's callback, and must
+ * return true — headers stay unflushed, so end()-time setHeader is legal
+ * by construction). Returns false for the degraded passthrough path:
+ * headers were already flushed before the first body byte (an explicit
+ * flushHeaders() call), where transforming could contradict a
+ * Content-Length that is already on the wire — the body then passes
+ * through untransformed and untouched.
+ *
+ * Hold mode latches per-request via the presence of `heldWireChunks`:
+ * once holding, every subsequent chunk is held (a mid-request
+ * flushHeaders() cannot reorder held bytes behind passed-through ones).
  */
-function applyRequestTransform(
+function holdWrite(
+  req: ClientRequest,
+  state: CaptureState,
+  args: unknown[],
+): boolean {
+  if (state.heldWireChunks === undefined) {
+    if ((req as unknown as { headersSent?: boolean }).headersSent === true) {
+      return false;
+    }
+    state.heldWireChunks = [];
+  }
+  const chunk = args[0];
+  if (chunk !== null && chunk !== undefined && typeof chunk !== 'function') {
+    state.heldWireChunks.push(chunkToBuffer(chunk, encodingArg(args)));
+  }
+  const last = args[args.length - 1];
+  if (typeof last === 'function') {
+    // The caller's flush callback: the bytes are safely buffered, which is
+    // the strongest guarantee a userland observer can distinguish here.
+    process.nextTick(last);
+  }
+  return true;
+}
+
+/**
+ * Buffer-and-hold, the end half. Concatenates the held wire bytes (plus
+ * end()'s own final chunk), runs the transform exactly once over the full
+ * body, updates Content-Length from Buffer.byteLength(..., 'utf8') — only
+ * when a Content-Length header is already present (chunked / absent-header
+ * requests never gain one), and headers are guaranteed unflushed because
+ * every write was withheld — and returns the argument list for a single
+ * terminal call to the original end(). Returns undefined for the degraded
+ * passthrough path (hold mode never started AND headers are already
+ * flushed): the wrapper then forwards the caller's args unchanged.
+ *
+ * A throwing transform, or one returning undefined / the unchanged input,
+ * forwards the original bytes (ADR §3).
+ */
+function holdEnd(
   req: ClientRequest,
   state: CaptureState,
   transform: RequestTransformer,
   args: unknown[],
-): void {
-  if (state.requestBodyChunks.length === 0) {
-    return;
+): unknown[] | undefined {
+  const headersSent =
+    (req as unknown as { headersSent?: boolean }).headersSent === true;
+  if (state.heldWireChunks === undefined && headersSent) {
+    return undefined;
   }
-  const original = Buffer.concat(state.requestBodyChunks).toString('utf8');
-  let replaced: string | undefined;
-  try {
-    replaced = transform(original);
-  } catch {
-    // A throwing transform forwards the original unchanged (ADR §3).
-    replaced = undefined;
+  const held = state.heldWireChunks ?? [];
+  const chunk = args[0];
+  if (chunk !== null && chunk !== undefined && typeof chunk !== 'function') {
+    held.push(chunkToBuffer(chunk, encodingArg(args)));
   }
-  if (replaced === undefined || replaced === original) {
-    return;
-  }
-  state.transformedBody = replaced;
-  args[0] = Buffer.from(replaced, 'utf8');
-  const header = (req as unknown as { getHeader?: (n: string) => unknown })
-    .getHeader;
-  const existing =
-    typeof header === 'function'
-      ? header.call(req, 'content-length')
-      : undefined;
-  if (existing !== undefined) {
-    (
-      req as unknown as {
-        setHeader?: (n: string, v: string | number) => void;
+  const last = args[args.length - 1];
+  const cb = typeof last === 'function' ? last : undefined;
+  let out = Buffer.concat(held);
+  if (!headersSent && out.length > 0) {
+    const original = out.toString('utf8');
+    let replaced: string | undefined;
+    try {
+      replaced = transform(original);
+    } catch {
+      replaced = undefined;
+    }
+    if (replaced !== undefined && replaced !== original) {
+      state.transformedBody = replaced;
+      out = Buffer.from(replaced, 'utf8');
+      const getHeader = (
+        req as unknown as { getHeader?: (n: string) => unknown }
+      ).getHeader;
+      const existing =
+        typeof getHeader === 'function'
+          ? getHeader.call(req, 'content-length')
+          : undefined;
+      if (existing !== undefined) {
+        (
+          req as unknown as {
+            setHeader?: (n: string, v: string | number) => void;
+          }
+        ).setHeader?.call(req, 'content-length', out.byteLength);
       }
-    ).setHeader?.call(
-      req,
-      'content-length',
-      Buffer.byteLength(replaced, 'utf8'),
-    );
+    }
   }
+  if (out.length > 0) {
+    return cb !== undefined ? [out, cb] : [out];
+  }
+  return cb !== undefined ? [cb] : [];
 }
 
 /**
@@ -937,12 +1042,30 @@ export class Interceptor {
         listener,
       ) as ClientRequest;
     };
+    /** Attach-on-first-touch shared by write/end: returns the capture
+     *  state when this request is (or becomes) captured, else tags the
+     *  negative decision and returns undefined. */
+    const captureFor = function (req: ClientRequest): CaptureState | undefined {
+      const tagged = tag(req);
+      const existing = tagged[kCapture] as CaptureState | undefined;
+      if (existing !== undefined) {
+        return existing;
+      }
+      if (tagged[kNoCapture]) {
+        return undefined;
+      }
+      if (shouldCapture(req, self.providers)) {
+        self.attachCapture(req, captureCallerTrace());
+        return tagged[kCapture] as CaptureState;
+      }
+      tagged[kNoCapture] = true;
+      return undefined;
+    };
     const writeWrapper = function (
       this: ClientRequest,
       ...args: unknown[]
     ): boolean {
-      const tagged = tag(this);
-      const capture = tagged[kCapture] as CaptureState | undefined;
+      const capture = captureFor(this);
       if (capture !== undefined) {
         appendChunk(capture.requestBodyChunks, args[0], encodingArg(args), {
           state: capture,
@@ -950,17 +1073,16 @@ export class Interceptor {
           cap: self.maxBodyBytes,
           onDropped: self.onBodyDropped,
         });
-      } else if (!tagged[kNoCapture] && shouldCapture(this, self.providers)) {
-        self.attachCapture(this, captureCallerTrace());
-        const state = tagged[kCapture] as CaptureState;
-        appendChunk(state.requestBodyChunks, args[0], encodingArg(args), {
-          state,
-          direction: 'request',
-          cap: self.maxBodyBytes,
-          onDropped: self.onBodyDropped,
-        });
-      } else if (!tagged[kNoCapture]) {
-        tagged[kNoCapture] = true;
+        // Buffer-and-hold: with a transform configured, withhold the
+        // chunk from the wire (holdWrite collects the uncapped wire copy
+        // and schedules the caller's callback); the full body goes out
+        // in one terminal write at end().
+        if (
+          self.requestTransform !== undefined &&
+          holdWrite(this, capture, args)
+        ) {
+          return true;
+        }
       }
       return reflectCall(
         originalWrite as unknown as ReflectFn,
@@ -972,10 +1094,11 @@ export class Interceptor {
       this: ClientRequest,
       ...args: unknown[]
     ): ClientRequest {
-      const tagged = tag(this);
-      const capture = tagged[kCapture] as CaptureState | undefined;
+      const capture = captureFor(this);
       if (capture !== undefined) {
-        if (args[0] !== undefined) {
+        // end([chunk[, encoding]][, callback]) — a lone callback arg is
+        // not a body chunk.
+        if (args[0] !== undefined && typeof args[0] !== 'function') {
           appendChunk(capture.requestBodyChunks, args[0], encodingArg(args), {
             state: capture,
             direction: 'request',
@@ -986,26 +1109,15 @@ export class Interceptor {
         capture.capturedEnd = true;
         capture.finished = true;
         if (self.requestTransform !== undefined) {
-          applyRequestTransform(this, capture, self.requestTransform, args);
+          const heldArgs = holdEnd(this, capture, self.requestTransform, args);
+          if (heldArgs !== undefined) {
+            return reflectCall(
+              originalEnd as unknown as ReflectFn,
+              this,
+              heldArgs,
+            ) as ClientRequest;
+          }
         }
-      } else if (!tagged[kNoCapture] && shouldCapture(this, self.providers)) {
-        self.attachCapture(this, captureCallerTrace());
-        const state = tagged[kCapture] as CaptureState;
-        if (args[0] !== undefined) {
-          appendChunk(state.requestBodyChunks, args[0], encodingArg(args), {
-            state,
-            direction: 'request',
-            cap: self.maxBodyBytes,
-            onDropped: self.onBodyDropped,
-          });
-        }
-        state.capturedEnd = true;
-        state.finished = true;
-        if (self.requestTransform !== undefined) {
-          applyRequestTransform(this, state, self.requestTransform, args);
-        }
-      } else if (!tagged[kNoCapture]) {
-        tagged[kNoCapture] = true;
       }
       return reflectCall(
         originalEnd as unknown as ReflectFn,
@@ -1296,7 +1408,9 @@ export class Interceptor {
     });
   }
 
-  private completeCapture(
+  /** Package-internal, not private: the fetch-path body observer
+   *  (observeRequestBody) re-enters it to release a deferred terminal. */
+  completeCapture(
     req: ClientRequest,
     state: CaptureState,
     error?: Error,
@@ -1304,6 +1418,14 @@ export class Interceptor {
     // Exactly-once guard: response-end and error can both fire for one
     // request; only the first terminal signal may schedule emission.
     if (state.emitted) {
+      return;
+    }
+    // Success terminal while the request-body observer is still draining
+    // the caller's stream: park it — the observer's finally re-enters.
+    // Error terminals emit immediately (a failed request's body never
+    // completes, and the error entry may carry a partial capture).
+    if (state.requestStreamPending === true && error === undefined) {
+      state.deferredTerminal = true;
       return;
     }
     state.emitted = true;

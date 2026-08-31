@@ -2224,3 +2224,420 @@ describe('maxBodyBytes cap with onBodyDropped event (h1p3)', () => {
     expect(entries.length).toBeLessThanOrEqual(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// cap-trip console.error is gated on callback absence (h2p5)
+//
+// When a body exceeds maxBodyBytes the interceptor fires the structured
+// onBodyDropped callback AND, historically, always wrote an operator line
+// to stderr. A caller who supplied onBodyDropped has taken ownership of
+// that signal, so the extra stderr write is just noise. The console.error
+// must therefore be emitted only when no onBodyDropped callback is
+// configured — for both the request and the response direction, which
+// share the single appendChunk cap-trip site. The structured callback and
+// the bodyDropped latch stay unconditional.
+// ---------------------------------------------------------------------------
+
+describe('cap-trip console.error gated on onBodyDropped absence (h2p5)', () => {
+  let errorSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    errorSpy.mockRestore();
+  });
+
+  /** Drive a single over-cap POST body through http.request. */
+  function postBody(port: number, body: Buffer): Promise<{ status: number }> {
+    return new Promise((resolve, reject) => {
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port,
+          method: 'POST',
+          path: '/v1/chat/completions',
+          headers: { 'content-type': 'application/json' },
+        },
+        (res) => {
+          res.on('data', () => {
+            /* drain */
+          });
+          res.on('end', () => resolve({ status: res.statusCode ?? 0 }));
+          res.on('error', reject);
+        },
+      );
+      req.on('error', reject);
+      req.write(body);
+      req.end();
+    });
+  }
+
+  test('request cap trip with onBodyDropped set: callback fires, console.error does not', async () => {
+    const calls: BodyDroppedInfo[] = [];
+    const cap = 256;
+    const interceptor = new Interceptor({
+      providers: ['127.0.0.1'],
+      capturePayloads: true,
+      maxBodyBytes: cap,
+      onBodyDropped: (info) => calls.push(info),
+    });
+    interceptor.install();
+    const { port, close } = await startServer();
+    try {
+      const { status } = await postBody(port, Buffer.from('x'.repeat(1024)));
+      expect(status).toBe(200);
+    } finally {
+      interceptor.restore();
+      await close();
+    }
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].direction).toBe('request');
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  test('request cap trip without onBodyDropped: console.error still fires with the drop message', async () => {
+    const cap = 256;
+    const interceptor = new Interceptor({
+      providers: ['127.0.0.1'],
+      capturePayloads: true,
+      maxBodyBytes: cap,
+    });
+    interceptor.install();
+    const { port, close } = await startServer();
+    try {
+      const { status } = await postBody(port, Buffer.from('x'.repeat(1024)));
+      expect(status).toBe(200);
+    } finally {
+      interceptor.restore();
+      await close();
+    }
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(String(errorSpy.mock.calls[0][0])).toContain(
+      'elenwatch: dropping body for host',
+    );
+    expect(String(errorSpy.mock.calls[0][0])).toContain('(request)');
+  });
+
+  test('response cap trip with onBodyDropped set: callback fires, console.error does not', async () => {
+    const calls: BodyDroppedInfo[] = [];
+    const cap = 256;
+    const bigBody = JSON.stringify({ out: 'y'.repeat(2000) });
+    const { port, close } = await startServer((req, res) => {
+      req.resume();
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(bigBody);
+      });
+    });
+    const interceptor = new Interceptor({
+      providers: ['127.0.0.1'],
+      capturePayloads: true,
+      maxBodyBytes: cap,
+      onBodyDropped: (info) => calls.push(info),
+    });
+    interceptor.install();
+    try {
+      await post(port, JSON.stringify({ ping: 'cap-response' }));
+    } finally {
+      interceptor.restore();
+      await close();
+    }
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(calls.find((c) => c.direction === 'response')).toBeDefined();
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  test('response cap trip without onBodyDropped: console.error still fires for the response direction', async () => {
+    const cap = 256;
+    const bigBody = JSON.stringify({ out: 'y'.repeat(2000) });
+    const { port, close } = await startServer((req, res) => {
+      req.resume();
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(bigBody);
+      });
+    });
+    const interceptor = new Interceptor({
+      providers: ['127.0.0.1'],
+      capturePayloads: true,
+      maxBodyBytes: cap,
+    });
+    interceptor.install();
+    try {
+      await post(port, JSON.stringify({ ping: 'cap-response' }));
+    } finally {
+      interceptor.restore();
+      await close();
+    }
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(errorSpy).toHaveBeenCalled();
+    const messages = errorSpy.mock.calls.map((c) => String(c[0]));
+    expect(messages.some((m) => m.includes('(response)'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// requestTransform buffer-and-hold: multi-write requests must reach the wire
+// transformed exactly once. The old rewrite-args-at-end approach forwarded
+// each write() to the socket immediately, so by end() the untransformed
+// chunks were already on the wire (duplication) and setHeader('content-
+// length') threw ERR_HTTP_HEADERS_SENT. Hold mode withholds every chunk
+// until end(), transforms the full body once, and writes one terminal chunk.
+// ---------------------------------------------------------------------------
+
+describe('requestTransform buffer-and-hold (multi-write)', () => {
+  /** POST the body as several write() calls plus a bare end(). */
+  function postMultiWrite(
+    port: number,
+    parts: string[],
+    contentLength: number,
+    onCb?: () => void,
+  ): Promise<{ status: number }> {
+    return new Promise((resolve, reject) => {
+      const req = http.request(
+        {
+          port,
+          hostname: '127.0.0.1',
+          path: '/v1/chat/completions',
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'content-length': contentLength,
+          },
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve({ status: res.statusCode ?? 0 }));
+        },
+      );
+      req.on('error', reject);
+      for (const p of parts) {
+        req.write(p, onCb);
+      }
+      req.end(onCb);
+    });
+  }
+
+  test('write()+write()+end(): wire gets the transformed body exactly once with accurate Content-Length', async () => {
+    const { port, received, close } = await captureServer();
+    try {
+      const entries: LlmLogEntry[] = [];
+      const interceptor = new Interceptor({
+        providers: ['127.0.0.1'],
+        capturePayloads: true,
+        logger: (e) => entries.push(e),
+        requestTransform: (body) => body.replace(/planet/g, 'universe'),
+      });
+      interceptor.install();
+      try {
+        const body = JSON.stringify({
+          model: 'gpt-4',
+          messages: [{ content: 'hello planet' }],
+        });
+        const split = Math.floor(body.length / 2);
+        const { status } = await postMultiWrite(
+          port,
+          [body.slice(0, split), body.slice(split)],
+          Buffer.byteLength(body, 'utf8'),
+        );
+        expect(status).toBe(200);
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+      } finally {
+        interceptor.restore();
+      }
+      const expected = JSON.stringify({
+        model: 'gpt-4',
+        messages: [{ content: 'hello universe' }],
+      });
+      const wire = received();
+      // Exactly the transformed body — no duplicated untransformed prefix.
+      expect(wire.body).toBe(expected);
+      expect(wire.contentLength).toBe(
+        String(Buffer.byteLength(expected, 'utf8')),
+      );
+      expect(entries).toHaveLength(1);
+      expect(JSON.stringify(entries[0].maskedRequestBody)).toContain(
+        'hello universe',
+      );
+    } finally {
+      await close();
+    }
+  });
+
+  test('write() and end() callbacks are still invoked in hold mode', async () => {
+    const { port, received, close } = await captureServer();
+    try {
+      const interceptor = new Interceptor({
+        providers: ['127.0.0.1'],
+        requestTransform: (b) => b,
+      });
+      interceptor.install();
+      let cbCalls = 0;
+      try {
+        const body = '{"model":"gpt-4"}';
+        const split = 5;
+        const { status } = await postMultiWrite(
+          port,
+          [body.slice(0, split), body.slice(split)],
+          Buffer.byteLength(body, 'utf8'),
+          () => cbCalls++,
+        );
+        expect(status).toBe(200);
+      } finally {
+        interceptor.restore();
+      }
+      // Two write callbacks + one end callback.
+      expect(cbCalls).toBe(3);
+      expect(received().body).toBe('{"model":"gpt-4"}');
+    } finally {
+      await close();
+    }
+  });
+
+  test('flushHeaders() before the body degrades to untransformed passthrough without throwing', async () => {
+    const { port, received, close } = await captureServer();
+    try {
+      const entries: LlmLogEntry[] = [];
+      const interceptor = new Interceptor({
+        providers: ['127.0.0.1'],
+        capturePayloads: true,
+        logger: (e) => entries.push(e),
+        requestTransform: (body) => body.replace(/planet/g, 'universe'),
+      });
+      interceptor.install();
+      try {
+        const body = JSON.stringify({
+          messages: [{ content: 'hello planet' }],
+        });
+        await new Promise<void>((resolve, reject) => {
+          const req = http.request(
+            {
+              port,
+              hostname: '127.0.0.1',
+              path: '/v1/chat/completions',
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                'content-length': Buffer.byteLength(body, 'utf8'),
+              },
+            },
+            (res) => {
+              res.resume();
+              res.on('end', () => resolve());
+            },
+          );
+          req.on('error', reject);
+          // Headers hit the wire before any body byte: transforming later
+          // could contradict the flushed Content-Length, so elenwatch must
+          // fall back to untouched passthrough — and must not throw.
+          req.flushHeaders();
+          req.end(body);
+        });
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+      } finally {
+        interceptor.restore();
+      }
+      // Original body on the wire, untransformed.
+      expect(received().body).toContain('hello planet');
+      // Capture still worked.
+      expect(entries).toHaveLength(1);
+      expect(JSON.stringify(entries[0].maskedRequestBody)).toContain(
+        'hello planet',
+      );
+    } finally {
+      await close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fetch streamed request body: true pass-through, not drain-then-dispatch.
+// The source's second chunk is gated on the server having observed the first
+// bytes of the request body. Under the old full-buffering approach this
+// deadlocks (the drain waits for chunk 2 → the server → dispatch → the
+// drain); under the passthrough generator the request streams and completes.
+// ---------------------------------------------------------------------------
+
+describe('fetch streamed body true pass-through', () => {
+  itIfUd(
+    'server receives the first chunk before the source produces the last one',
+    async () => {
+      let serverSawFirstByte: () => void = () => undefined;
+      const firstByteSeen = new Promise<void>((r) => {
+        serverSawFirstByte = r;
+      });
+      const { port, close } = await startServer((req, res) => {
+        req.on('data', () => serverSawFirstByte());
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ usage: { completion_tokens: 1 } }));
+        });
+      });
+      const entries: LlmLogEntry[] = [];
+      const interceptor = new Interceptor({
+        providers: ['127.0.0.1'],
+        capturePayloads: true,
+        logger: (e) => entries.push(e),
+      });
+      interceptor.install();
+      try {
+        const chunk1 = Buffer.from('{"msg":"he', 'utf8');
+        const chunk2 = Buffer.from('llo"}', 'utf8');
+        let idx = 0;
+        const stream = new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            if (idx === 0) {
+              controller.enqueue(chunk1);
+              idx++;
+              return;
+            }
+            if (idx === 1) {
+              await firstByteSeen;
+              controller.enqueue(chunk2);
+              idx++;
+              return;
+            }
+            controller.close();
+          },
+        });
+        const res = await udPeer!.fetch(
+          `http://127.0.0.1:${port}/v1/chat/completions`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: stream,
+            duplex: 'half',
+          } as unknown as RequestInit,
+        );
+        expect(res.status).toBe(200);
+        await res.text();
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+      } finally {
+        interceptor.restore();
+        await close();
+      }
+      // The deferred-terminal join guarantees the entry carries the FULL
+      // captured body even though emission raced the stream's tail.
+      expect(entries).toHaveLength(1);
+      expect(JSON.stringify(entries[0].maskedRequestBody)).toBe(
+        '{"msg":"hello"}',
+      );
+    },
+    10000,
+  );
+});

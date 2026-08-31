@@ -55,6 +55,7 @@
     "postbuild": "node scripts/postbuild.mjs",
     "lint": "eslint \"src/**/*.ts\"",
     "pretest": "npm run build",
+    "prepublishOnly": "npm run build && npm test",
     "test": "jest --passWithNoTests",
     "test:coverage": "jest --coverage",
     "typecheck": "tsc -p tsconfig.json --noEmit"

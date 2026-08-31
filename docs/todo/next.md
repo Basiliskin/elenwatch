@@ -1,1 +1,3 @@
-/dima-plan-roadmap-ddd-v5 execute docs/roadmaps/llm-http-proxy/horizons/horizon-06-publish-verification- otel-demo-roadmap.json
+/dima-plan-roadmap-ddd-v5-7 execute docs/roadmaps/elenwatch/horizons/horizon-02-fix-streamed-body-corruption-esm-build-docs-roadmap.json
+
+- must address - true-streaming rewrite

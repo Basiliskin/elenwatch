@@ -21,11 +21,13 @@
 
 import type { Logger } from './logger';
 import type { LlmLogEntry } from './options';
+import { peerRequire } from './peer-require';
 
-// Resolve the peer once at module load. The eslint-disable covers the
-// `require(...)` call that the strict type-aware lint config otherwise
-// rejects; the cast to the imported type lets the rest of the file use
-// real types so the no-unsafe-* lint rules do not fire on `any`.
+// Resolve the peer once at module load via `peerRequire`, which works in
+// both the CJS and the ESM build (a bare `require` here would throw
+// `require is not defined` under ESM and be misread as "peer absent"). The
+// cast to the imported type lets the rest of the file use real types so the
+// no-unsafe-* lint rules do not fire on `any`.
 type OtelApi = typeof import('@opentelemetry/api');
 
 interface OtelHandle {
@@ -35,8 +37,7 @@ interface OtelHandle {
 
 let otel: OtelHandle | undefined;
 try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const mod = require('@opentelemetry/api') as OtelApi;
+  const mod = peerRequire('@opentelemetry/api') as OtelApi;
   otel = { trace: mod.trace, SpanStatusCode: mod.SpanStatusCode };
 } catch {
   // Peers not installed — leave `otel` undefined so calls below are inert.

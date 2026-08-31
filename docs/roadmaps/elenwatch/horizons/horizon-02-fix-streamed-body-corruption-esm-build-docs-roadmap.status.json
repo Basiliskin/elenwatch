@@ -2,7 +2,7 @@
   "roadmapFile": "docs/roadmaps/elenwatch/horizons/horizon-02-fix-streamed-body-corruption-esm-build-docs-roadmap.json",
   "roadmapTask": "Fix the findings from an external pre-publish review of the elenwatch npm package (an in-process LLM provider HTTP traffic interceptor) so that 0.2.1 becomes publishable: blocker 1 — a streamed fetch request body over maxBodyBytes is truncated on the wire (data corruption); blocker 2 — the ESM build does not work at all (extensionless emitted specifiers + bare require() under ESM + extensionless .d.ts, and the postbuild verifier never actually loads the ESM entry); plus five should-fix items (lint error, unconditional cap-trip console.error, missing prepublishOnly, 31-line package README, undocumented aggressive redaction needles). User decisions: fix ESM properly (not CJS-only); full README sections; CI + CHANGELOG deferred to horizon 3.",
   "createdAt": "2026-08-31T13:05:00.000Z",
-  "updatedAt": "2026-08-31T13:10:00.000Z",
+  "updatedAt": "2026-08-31T18:20:00.000Z",
   "roadmapRevision": 0,
   "phases": [
     {
@@ -26,10 +26,111 @@
       "completedAt": "2026-08-31T13:10:00.000Z",
       "notes": "Compensation (revert the interceptor.ts diff — additive wire array, no persisted state) understood; not needed. Also extracted module-level chunkToBuffer() so the wire and capture paths decode chunks identically (byte-for-byte)."
     },
-    { "phaseId": "createrequire-lazy-load-optional-peers", "status": "not-started", "attempts": 0 },
-    { "phaseId": "rewrite-esm-specifiers-with-js-extensions", "status": "not-started", "attempts": 0 },
-    { "phaseId": "add-pack-and-import-smoke-test", "status": "not-started", "attempts": 0 },
-    { "phaseId": "gate-cap-trip-console-error", "status": "not-started", "attempts": 0 },
-    { "phaseId": "write-full-readme-sections", "status": "not-started", "attempts": 0 }
+    {
+      "phaseId": "createrequire-lazy-load-optional-peers",
+      "status": "done",
+      "attempts": 1,
+      "gateRun": "npx tsc -p tsconfig.cjs.json --noEmit (exit 0); npx tsc -p tsconfig.esm.json --noEmit (exit 0); npm run build (pass); npm run lint (exit 0); npm test (174 passed, 8 skipped, 0 failed — baseline 171 + 3 new peer-require tests); manual node --input-type=module load of dist/esm/peer-require.js resolves undici + @opentelemetry/api",
+      "gradeResult": {
+        "phaseId": "createrequire-lazy-load-optional-peers",
+        "dimensionScores": [
+          { "dimensionId": "createrequire-both-emits", "score": 9, "pass": true, "evidence": "createRequire from 'node:module' centralized in new src/peer-require.ts, consumed by both interceptor.ts and otel.ts; both tsc projects --noEmit exit 0; no bare top-level require( for the peers remains; dist/esm/peer-require.js has no bare require call and no import.meta in code. Not 10: 'import.meta' string still in a doc comment; full dist/esm/index.js load deferred to next phase." },
+          { "dimensionId": "esm-consumer-resolves-peer", "score": 8, "pass": true, "evidence": "src/peer-require.test.ts spawns a real node --input-type=module child importing built dist/esm/peer-require.js and asserts peerRequire('undici').fetch is a function and peerRequire('@opentelemetry/api').trace is an object; passes. createRequire branch genuinely exercised (Jest transform cannot reach it). Full elenwatch ESM index load is a later phase, which the rubric permits." },
+          { "dimensionId": "peer-absent-still-inert", "score": 8, "pass": true, "evidence": "git diff --stat: otel.test.ts and global-fetch-capture.integration.test.ts unmodified; full jest 174 passed / 8 skipped / 0 failed matching baseline; both catch blocks still set handle undefined; buildPeerRequire wraps createRequire in try/catch returning a throwing stub so install() never throws. Broad catch retained deliberately (otel.test.ts throws a plain codeless Error), documented; rubric allows via the OR clause; not narrowed keeps it below 9." },
+          { "dimensionId": "lint-green-directives-updated", "score": 9, "pass": true, "evidence": "npm run lint exits 0; both // eslint-disable-next-line @typescript-eslint/no-require-imports directives removed (one each in interceptor.ts, otel.ts) with no replacement; no file-level or rule-wide disable added; no-unused-disable did not fire." },
+          { "dimensionId": "no-behavior-drift-on-error-path", "score": 9, "pass": true, "evidence": "Only semantic change is require(peer)->peerRequire(peer); same undici/otel variables, consumed identically; peerRequire is a module-scope const built once, not per install(); no new skipped/failing tests, no added console.warn/error on peer-absent path. Not 10: the throwing-stub fallback path has no direct test." }
+        ],
+        "overallPass": true
+      },
+      "compensationInvoked": false,
+      "startedAt": "2026-08-31T16:15:00.000Z",
+      "completedAt": "2026-08-31T16:25:00.000Z",
+      "notes": "Build-tolerant mechanism chosen: shared src/peer-require.ts using `typeof require === 'function' ? require : createRequire(pathToFileURL(cwd+'/'))` — no import.meta text anywhere in code (only a comment), so it compiles under tsconfig.cjs.json / tsconfig.json (jest) and tsconfig.esm.json alike. ESM require is anchored at process.cwd() (app root, where optional peers install) since import.meta.url is unavailable without breaking the CJS emit. Catch blocks NOT narrowed to MODULE_NOT_FOUND: the pre-existing otel.test.ts peers-absent test throws a plain codeless Error and asserts a non-throwing no-op; narrowing would break that unmodified test. Compensation (revert to bare require calls; delete peer-require.ts) understood; not needed."
+    },
+    {
+      "phaseId": "rewrite-esm-specifiers-with-js-extensions",
+      "status": "done",
+      "attempts": 1,
+      "gateRun": "npm run build (exit 0, verifyEsmTree passes); npm run lint (exit 0); npm test (174 passed, 8 skipped, 0 failed — baseline unchanged); node --input-type=module import('dist/esm/index.js') exits 0; node require('dist/cjs/index.js') exits 0; nodenext typecheck of dist/esm/index.d.ts clean; node scripts/postbuild.mjs --verify-only exits 1 on a reintroduced extensionless specifier; double-run shasum of dist/esm identical",
+      "gradeResult": {
+        "phaseId": "rewrite-esm-specifiers-with-js-extensions",
+        "dimensionScores": [
+          { "dimensionId": "esm-specifier-rewrite-completeness", "score": 8, "pass": true, "evidence": "All relative from/import specifiers in dist/esm .js and .d.ts end .js (incl. export type {} from); real ESM import of dist/esm/index.js exits 0; nodenext typecheck clean, no relative TS2307. Not 10: no dynamic import() literal exists to exercise that regex branch; single-line regex would miss a specifier split across lines." },
+          { "dimensionId": "selective-rewrite-no-false-positives", "score": 8, "pass": true, "evidence": "from 'undici' / '@opentelemetry/api' / 'node:module' unchanged; SPECIFIER_RE requires a from/import keyword so data literals untouched; no .js.js/.json.js/.node.js; HAS_EXTENSION skips already-extensioned; CJS+ESM loads resolve. Not 10: regex not AST." },
+          { "dimensionId": "directory-target-index-mapping", "score": 7, "pass": true, "evidence": "resolveSpecifier() stats join(fileDir, spec): directory-with-index.js -> <spec>/index.js, sibling file -> <spec>.js, index-less directory left for the verifier — decision by inspecting the emitted FS, not guessing. Below 10: dist/esm is flat and no fixture test exercises the directory branch." },
+          { "dimensionId": "idempotency-and-failing-verifier", "score": 7, "pass": true, "evidence": "Aggregate shasum of dist/esm .js+.d.ts byte-identical across a second postbuild run; --verify-only prints the offending file+specifier and exits 1 on a reintroduced extensionless spec; verifyEsmTree() runs in the npm run build path and scans .js and .d.ts, distinguishing relative from bare. Below 8: in a normal build the verifier is a backstop after a symmetric rewrite; the red-build demo runs via --verify-only." },
+          { "dimensionId": "cjs-untouched-and-prepublishonly", "score": 8, "pass": true, "evidence": "Rewrite walks esmDir only; dist/cjs/index.js still require(\"./interceptor\") etc., unchanged; CJS require exits 0; npm pkg get scripts.prepublishOnly is exactly \"npm run build && npm test\"; single added line between pretest and test. Not 10: no explicit hash-lock test on dist/cjs." }
+        ],
+        "overallPass": true
+      },
+      "compensationInvoked": false,
+      "startedAt": "2026-08-31T16:35:00.000Z",
+      "completedAt": "2026-08-31T16:45:00.000Z",
+      "notes": "postbuild.mjs gains a rewrite pass (walk dist/esm, regex on from/import()/side-effect-import specifiers starting ./ or ../, skip already-extensioned for idempotency, resolveSpecifier stats the emitted FS for file-vs-directory) and a hoisted verifyEsmTree() that scans .js+.d.ts and process.exit(1)s on any extensionless relative specifier or non-module index.*.js. `node scripts/postbuild.mjs --verify-only` runs the guard standalone (no rewrite) to demonstrate a red build. package.json: added \"prepublishOnly\": \"npm run build && npm test\". dist/cjs and src untouched. Compensation (remove the rewrite pass + prepublishOnly line; dist is regenerated every build) understood; not needed." },
+    {
+      "phaseId": "add-pack-and-import-smoke-test",
+      "status": "done",
+      "attempts": 1,
+      "gateRun": "npm run lint (exit 0); npm test (176 passed, 8 skipped, 0 failed — baseline 174 + 2 new smoke children); npm run build (pass); RED check: reintroduced an extensionless specifier in dist/esm/index.js -> ESM child exits non-zero with module error on stderr, CJS child still passes, rebuild restores green",
+      "gradeResult": {
+        "phaseId": "add-pack-and-import-smoke-test",
+        "dimensionScores": [
+          { "dimensionId": "installs-from-packed-tarball", "score": 9, "pass": true, "evidence": "beforeAll runs npm pack --pack-destination <mkdtemp> (not --dry-run), parses the .tgz name from stdout, then npm install <tgzPath> into a separate mkdtempSync(tmpdir(),'elenwatch-consumer-') dir with a fresh private package.json and no workspace link; both children spawn cwd=installDir targeting the bare 'elenwatch' specifier only. RED check confirmed. Not 10: no assertion the resolved path is node_modules/elenwatch." },
+          { "dimensionId": "dual-esm-cjs-child-processes", "score": 9, "pass": true, "evidence": "Two independent spawnSync(process.execPath) calls — one --input-type=module --eval import('elenwatch'), one --eval require('elenwatch'); shared ASSERT_MODULE checks typeof Interceptor==='function' AND typeof VERSION==='string' && length>0 mapped to process.exit; assertChildOk makes the parent throw on status!==0 embedding child stderr+stdout. Reverting phase 2 leaves CJS green, ESM non-zero. Not 10: shape check limited to two symbols." },
+          { "dimensionId": "esm-failure-not-swallowed", "score": 9, "pass": true, "evidence": "ESM child's only .catch logs err.stack and process.exit(1); process.exit runs inside .then after the shape check so it cannot exit 0 before import settles; assertChildOk distinctly handles r.error, r.signal, and r.status!==0 incl. null — a timeout never passes. RED run surfaced the module error on stderr. Not 10: regression scenarios covered by manual RED check, not codified assertions." },
+          { "dimensionId": "skip-when-npm-unavailable", "score": 6, "pass": true, "evidence": "npmAvailable() probes npm --version synchronously before the suite is defined and selects NPM_OK ? describe : describe.skip, matching the existing ternary skip idiom; PATH stripped of npm reports the suite skipped, exit 0, no assertion fires. Held to 6: the guard covers npm invocability only, not pack/install success — an install failure throws in beforeAll (distinguished from a load regression by location, not classified as skip)." },
+          { "dimensionId": "temp-dir-cleanup-and-timeout", "score": 9, "pass": true, "evidence": "Every temp path is pushed to tmpDirs; afterAll rmSync(dir,{recursive:true,force:true}) over all of them (packDir removal deletes the .tgz); cleanup is in afterAll not the test body so it runs on throw. Every execFileSync/spawnSync passes an explicit timeout + 16MB maxBuffer; per-test timeout 180s; pack runs once in beforeAll and is reused. Not 10: no post-run assertion that os.tmpdir() has no leftover elenwatch-* dirs." },
+          { "dimensionId": "wired-into-verify-gate", "score": 9, "pass": true, "evidence": "Filename ends .test.ts -> matches the package jest testRegex with no config change; npm test runs it directly and pretest->npm run build makes dist current before npm pack; prepublishOnly is 'npm run build && npm test' so it runs in the release gate with no opt-in. Run shows both children executed under plain npm test. Not 10: no explicit release-gate marker or freshly-built-dist guard." }
+        ],
+        "overallPass": true
+      },
+      "compensationInvoked": false,
+      "startedAt": "2026-08-31T17:15:00.000Z",
+      "completedAt": "2026-08-31T17:30:00.000Z",
+      "notes": "New src/pack-and-import.smoke.test.ts follows the packaging-build.test.ts / peer-require.test.ts idioms: real npm pack + npm install of the .tgz into an mkdtemp consumer dir, two separate node children (ESM import(), CJS require()) asserting Interceptor is a function and VERSION a non-empty string, describe.skip when npm is absent, afterAll temp cleanup, explicit per-spawn timeouts + maxBuffer. Compensation (delete the test file; no runtime/packaging effect) understood; not needed."
+    },
+    {
+      "phaseId": "gate-cap-trip-console-error",
+      "status": "done",
+      "attempts": 1,
+      "gateRun": "npm run lint (exit 0); npm run build (pass, verifyEsmTree ok); npm test (180 passed, 8 skipped, 0 failed — baseline 176 + 4 new h2p5 tests); npx jest src/interceptor.test.ts -t h2p5 (4 passed)",
+      "gradeResult": {
+        "phaseId": "gate-cap-trip-console-error",
+        "dimensionScores": [
+          { "dimensionId": "log-guard-on-callback-absence", "score": 9, "pass": true, "evidence": "console.error wrapped in `if (capCtx.onDropped === undefined)` in appendChunk; message string byte-for-byte unchanged; tests assert spy-not-called with callback and spy-called-once with exact substring 'elenwatch: dropping body for host' when no callback." },
+          { "dimensionId": "callback-still-unconditional", "score": 9, "pass": true, "evidence": "bodyDropped latch flip and bytesCaptured clamp sit before the guard, unchanged; capCtx.onDropped?.(info) with its try/catch remains outside the guard; fire-once early-return intact." },
+          { "dimensionId": "both-directions-covered", "score": 9, "pass": true, "evidence": "appendChunk is the single cap-trip console.error site shared by request and response; suite includes a runtime response-direction check asserting a '(response)' message when no callback and none when a callback is set." },
+          { "dimensionId": "tests-assert-both-states-with-spy", "score": 9, "pass": true, "evidence": "jest.spyOn(console,'error') in beforeEach, mockRestore in afterEach; 4 tests assert both callback-set (spy not called, calls length 1) and callback-unset (toHaveBeenCalledTimes(1) / message substring), request and response directions." },
+          { "dimensionId": "change-scope-contained", "score": 9, "pass": true, "evidence": "Cap-trip diff is the 4-line if-guard plus comment rewording and the new h2p5 describe block; no touch to BodyDroppedInfo, cap math, maxBodyBytes default, wire/capture split, or public options; compensation is literally deleting the if wrapper. (The peerRequire('undici') line in the same file is uncommitted work from the prior createrequire phase, not this phase.)" }
+        ],
+        "overallPass": true
+      },
+      "compensationInvoked": false,
+      "startedAt": "2026-08-31T16:46:00.000Z",
+      "completedAt": "2026-08-31T16:52:00.000Z",
+      "notes": "Wrapped only the cap-trip console.error in `if (capCtx.onDropped === undefined)` at the single shared appendChunk log site; onDropped(info) and the bodyDropped flip left unconditional. New describe block 'cap-trip console.error gated on onBodyDropped absence (h2p5)' adds 4 console.error-spy tests (request/response x callback-set/unset) with mockRestore in afterEach. Compensation (remove the if guard) understood; not needed."
+    },
+    {
+      "phaseId": "write-full-readme-sections",
+      "status": "done",
+      "attempts": 1,
+      "gateRun": "npm run lint (exit 0); npm test (180 passed, 8 skipped, 0 failed — build runs via pretest); README docs-only, no code touched; wc -l README.md = 322; grep TODO/TBD/coming-soon = none",
+      "gradeResult": {
+        "phaseId": "write-full-readme-sections",
+        "dimensionScores": [
+          { "dimensionId": "four-sections-present", "score": 9, "pass": true, "evidence": "322-line README; locatable ## Installation, ## Configuration, ## Limitations (top-level), ## API; each with prose + tables/code; anchor TOC; logical ordering; no TODO/TBD/coming-soon." },
+          { "dimensionId": "configuration-accuracy", "score": 9, "pass": true, "evidence": "capturePayloads default false (no body emitted); maxBodyBytes '10 MiB (10 * 1024 * 1024 bytes)', per-direction; BodyDroppedInfo all four typed fields; once per (host,direction); stderr warning only when no onBodyDropped and silenced when supplied; redaction = case-insensitive substring with over-redaction warning + 'address' example; options table with type+default for all 10 InterceptorOptions fields." },
+          { "dimensionId": "limitations-coverage", "score": 9, "pass": true, "evidence": "requestTransform http/https-path only, fetch bodies captured/logged never transformed, asymmetric with responseTransform; streamed fetch bodies fully buffered yet delivered byte-for-byte even over maxBodyBytes; one interceptor per process, install() patches http.ClientRequest.prototype + global undici dispatcher; no contradictions." },
+          { "dimensionId": "installation-optional-peers", "score": 8, "pass": true, "evidence": "npm install elenwatch; no mandatory runtime deps; peer table marks undici (silently skipped, no error) and @opentelemetry/api (otelSpanLogger inert) as optional." },
+          { "dimensionId": "api-matches-real-exports", "score": 9, "pass": true, "evidence": "Interceptor class with instance .install()/.restore(); Logger type, otelSpanLogger, VERSION; every documented symbol maps to a real src/index.ts export; states named exports only / no default / no free install-restore; complete runnable new Interceptor({...}) + install/restore example." },
+          { "dimensionId": "snippet-validity", "score": 9, "pass": true, "evidence": "Every fenced block language-tagged (sh/ts); TS blocks valid; maxBodyBytes values are byte numbers; onBodyDropped examples use info.host/direction/bytes/cap exactly; shell blocks real npm commands, no fabricated binary." }
+        ],
+        "overallPass": true
+      },
+      "compensationInvoked": false,
+      "startedAt": "2026-08-31T18:05:00.000Z",
+      "completedAt": "2026-08-31T18:20:00.000Z",
+      "notes": "Rewrote README.md (31 -> 322 lines) with Installation / Quick start / Configuration / Limitations / API. Grounded in src/options.ts docstrings, src/index.ts exports, src/redaction.ts (RedactionConfig is sensitiveFields/requestOnly/responseOnly/placeholder — additive, built-in needle list not narrowable). Compensation (restore previous README from git) understood; not needed."
+    }
   ]
 }
