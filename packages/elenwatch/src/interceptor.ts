@@ -414,16 +414,26 @@ class WrappingDispatcher extends EventEmitter {
         void (async () => {
           try {
             const src = body as AsyncIterable<unknown>;
-            const chunks: Buffer[] = [];
+            // Two independent accumulators. `wireChunks` collects every
+            // byte drained from the source with no cap check, so the body
+            // sent upstream is always the caller's full body. `captureChunks`
+            // goes through appendChunk, which truncates at maxBodyBytes and
+            // flips bodyDropped / fires onBodyDropped — the log copy, and
+            // only the log copy, is what a tripped cap shortens.
+            const wireChunks: Buffer[] = [];
+            const captureChunks: Buffer[] = [];
             for await (const chunk of src) {
-              appendChunk(chunks, chunk, undefined, reqCapCtx);
+              if (chunk !== null && chunk !== undefined) {
+                wireChunks.push(chunkToBuffer(chunk, undefined));
+              }
+              appendChunk(captureChunks, chunk, undefined, reqCapCtx);
             }
-            if (chunks.length > 0) {
-              state.requestBodyChunks.push(...chunks);
+            if (captureChunks.length > 0) {
+              state.requestBodyChunks.push(...captureChunks);
             }
             state.capturedEnd = true;
             state.finished = true;
-            options.body = Buffer.concat(chunks);
+            options.body = Buffer.concat(wireChunks);
             this.original.dispatch(options, wrappedHandler);
           } catch (err) {
             // Upstream drain threw: finalize capture so emitLogEntry
@@ -557,6 +567,33 @@ function tag(target: object): Tagged {
   return target as unknown as Tagged;
 }
 
+/**
+ * Decode a single streamed body chunk into raw bytes, identically for the
+ * size-capped capture buffer and the untruncated wire buffer. Decoding
+ * per chunk (rather than per concatenated buffer) is safe here because the
+ * bytes themselves are preserved — a multi-byte character split across two
+ * chunks is only interpreted later, on the joined buffer.
+ */
+function chunkToBuffer(chunk: unknown, encoding?: string): Buffer {
+  if (typeof chunk === 'string') {
+    return Buffer.from(chunk, encoding as BufferEncoding);
+  }
+  if (Buffer.isBuffer(chunk) || chunk instanceof Uint8Array) {
+    return Buffer.from(chunk as Uint8Array);
+  }
+  if (typeof chunk === 'object' || typeof chunk === 'function') {
+    try {
+      return Buffer.from(JSON.stringify(chunk), 'utf8');
+    } catch {
+      return Buffer.from('<unserializable>', 'utf8');
+    }
+  }
+  // Primitive (number | boolean | bigint | symbol): the object guard above
+  // already excluded objects, so String() cannot produce the `[object
+  // Object]` leak the lint rule guards against.
+  return Buffer.from(String(chunk), 'utf8');
+}
+
 function appendChunk(
   chunks: Buffer[],
   chunk: unknown,
@@ -578,26 +615,7 @@ function appendChunk(
   if (chunk === null || chunk === undefined) {
     return;
   }
-  let buf: Buffer;
-  if (typeof chunk === 'string') {
-    // Keep the raw bytes so a multi-byte character split across two
-    // chunks is not corrupted by per-chunk decoding: the final UTF-8
-    // decode happens exactly once, on the concatenated buffer.
-    buf = Buffer.from(chunk, encoding as BufferEncoding);
-  } else if (Buffer.isBuffer(chunk) || chunk instanceof Uint8Array) {
-    buf = Buffer.from(chunk as Uint8Array);
-  } else if (typeof chunk === 'object' || typeof chunk === 'function') {
-    try {
-      buf = Buffer.from(JSON.stringify(chunk), 'utf8');
-    } catch {
-      buf = Buffer.from('<unserializable>', 'utf8');
-    }
-  } else {
-    // Primitive (number | boolean | bigint | symbol): safe, and the type
-    // guard above already excluded objects, so String() cannot produce the
-    // `[object Object]` leak the lint rule guards against.
-    buf = Buffer.from(String(chunk), 'utf8');
-  }
+  const buf = chunkToBuffer(chunk, encoding);
   if (capCtx) {
     // Per-direction byte accounting. `byteLength` is the actual byte count
     // for UTF-8 strings / Buffers / Uint8Arrays — never string `.length`

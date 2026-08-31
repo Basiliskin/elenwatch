@@ -1,28 +1,36 @@
 # elenwatch — Discoveries
 
 Append-only. One line per grounded fact learned during discovery or
-execution. Stated as fact, never as a plan. The "what to do about it"
-belongs in a phase of the horizon that discovered it (or the next horizon),
-not here. `[landed]` is marked mechanically when the fact is encoded in
-the repo; landed entries are skipped by Step -1's bounded read.
+execution. Stated as fact, never as a plan. `[landed]` is marked
+mechanically when the fact's horizon is `completed` in state.md;
+landed entries are skipped by Step -1's bounded read.
 
-- 2026-08-31 | horizon 1 | interceptor fetch path | dispatch at interceptor.ts:267 calls attachCapture unconditionally, ignoring shouldCapture; http-patch path checks it [packages/elenwatch/src/interceptor.ts] → fix is one guard + early-return before capture-state allocation
-- 2026-08-31 | horizon 1 | interceptor race | actual race code lives at lines 302-396, not the brief's 280-298 [packages/elenwatch/src/interceptor.ts] → cite verified range, not the brief's
-- 2026-08-31 | horizon 1 | synthetic getHeader | `?? hostHeader` returns host string for any absent header; only host key is read today so the lie is silent [packages/elenwatch/src/interceptor.ts] → fix returns undefined for absent non-host keys, keep host fallback only for `host`
-- 2026-08-31 | horizon 1 | maxBodyBytes | Logger seam is LlmLogEntry-only; options.ts has no maxBodyBytes; capture-state has no byte accounting [packages/elenwatch/src/logger.ts] → parallel onBodyDropped callback separate from Logger; default ~10 MiB
-- 2026-08-31 | horizon 1 | options surface | InterceptorOptions lacks maxBodyBytes/onBodyDropped fields and docstring entry [packages/elenwatch/src/options.ts] → add both, plumb through Interceptor constructor at line 683-692
-- 2026-08-31 | horizon 1 | negative fetch test missing | interceptor.test.ts has no negative test for non-provider fetch; every existing test sets `providers: ['127.0.0.1']` [packages/elenwatch/src/interceptor.test.ts] → add in interceptor.test.ts (unit-level) with `providers: [/api\.openai\.com/]`
-- 2026-08-31 | horizon 1 | APM patch-stacking | README.md (33 lines) lacks restore() caveat, APM stacking note, dd-trace/newrelic mention [packages/elenwatch/README.md] → deferred to next horizon (Phase 5 in deferred list); no code fix possible
-- 2026-08-31 | horizon 1 | package.json metadata | package.json lacks repository/bugs/homepage/packageManager fields [packages/elenwatch/package.json] → add all four with git remote + pnpm pin
-- 2026-08-31 | horizon 1 | VERSION drift | src/index.ts:33 hand-duplicates VERSION; no build step synthesizes it [packages/elenwatch/src/index.ts] → prebuild script reads package.json and writes src/version.ts
-- 2026-08-31 | horizon 1 | sdk-fetch-shim | unexported but compiles to dist and ships .d.ts pulling @ai-sdk/anthropic (devDep-only) [packages/elenwatch/src/sdk-fetch-shim.ts] → exclude from tsconfig.{cjs,esm}.json so it stops emitting
-- 2026-08-31 | horizon 1 | exports types | `exports['.'].types` points at dist/cjs/index.d.ts for both import and require; arethetypeswrong flags this [packages/elenwatch/package.json] → split per ESM/CJS, verify with arethetypeswrong
-- 2026-08-31 | horizon 1 | eslint-disable directives | otel.ts:38 and otel.test.ts:101 each have a dual-rule directive under tseslint.configs.recommendedTypeChecked [packages/elenwatch/eslint.config.mjs] → verify by removing one at a time and re-running lint; keep if lint fails
-- 2026-08-31 | horizon 1 | no CI | no .github directory exists at repo root [packages/elenwatch/.git] → deferred to next horizon; will wire GitHub Actions against the new packageManager pin
-- 2026-08-31 | horizon 1 | no CHANGELOG | no CHANGELOG.md at packages/elenwatch/ or repo root [packages/elenwatch/] → deferred to next horizon; Keep-a-Changelog format
-- 2026-08-31 | horizon 1 | test runner | Jest 29.7.0 + ts-jest, NOT Vitest (brief assumed Vitest) [packages/elenwatch/package.json] → use jest.fn()/describe/test; withEntries pattern at interceptor.test.ts:75-91 unchanged
-- 2026-08-31 | horizon 1 | Logger seam extension | Logger type is `(entry: LlmLogEntry) => void` only [packages/elenwatch/src/logger.ts] → keep Logger unchanged; add onBodyDropped as a parallel top-level option
-- 2026-08-31 | horizon 1 | README restore() | README shows install()/restore() in 2 lines; no caveats [packages/elenwatch/README.md] → deferred to next horizon (Limitations section)
-- 2026-08-31 | horizon 1 | undici peer dep | undici is peerDependenciesMeta optional, NOT in node_modules by default → fetch-path tests use `require('undici')` + `test.skip` if absent; install with `npm i -D undici --no-save` to exercise the dispatcher (project's established pattern in 3 integration suites)
-- 2026-08-31 | horizon 1 | Interceptor.providers visibility | widened private → public readonly so WrappingDispatcher can read it for shouldCapture precheck; shouldCapture param widened to `readonly` to match [packages/elenwatch/src/interceptor.ts] → no runtime API change; readonly enforces no mutation
-- 2026-08-31 | horizon 1 | synthetic getHeader | extracted to module-level exported `syntheticGetHeader(name, headersLower, hostHeader)` helper rather than inlining the ternary [packages/elenwatch/src/interceptor.ts:1444-1468] → invariant lives in one named function with full JSDoc; dispatcher delegates; test file imports it directly so the helper is exercised, not re-implemented
+- [landed] 2026-08-31 | horizon 1 | interceptor fetch path | dispatch ignored shouldCapture on the fetch path; http-patch path checked it — see horizon-01 roadmap.md
+- [landed] 2026-08-31 | horizon 1 | interceptor race | streamed-request race code lives at interceptor.ts:302-396 — see horizon-01 roadmap.md
+- [landed] 2026-08-31 | horizon 1 | synthetic getHeader | `?? hostHeader` returned the host string for any absent header key — see horizon-01 roadmap.md
+- [landed] 2026-08-31 | horizon 1 | maxBodyBytes | Logger seam is LlmLogEntry-only; options had no byte cap; capture-state had no byte accounting — see horizon-01 roadmap.md
+- [landed] 2026-08-31 | horizon 1 | options surface | InterceptorOptions plumbs through the Interceptor constructor — see horizon-01 roadmap.md
+- [landed] 2026-08-31 | horizon 1 | tests | negative (non-provider) fetch test was missing; every existing test used providers:['127.0.0.1'] — see horizon-01 roadmap.md
+- [landed] 2026-08-31 | horizon 1 | package.json metadata | lacked repository/bugs/homepage/packageManager — see horizon-01 roadmap.md
+- [landed] 2026-08-31 | horizon 1 | VERSION drift | src/index.ts hand-duplicated VERSION; no build step synthesized it — see horizon-01 roadmap.md
+- [landed] 2026-08-31 | horizon 1 | sdk-fetch-shim | unexported but compiled to dist and shipped a .d.ts pulling @ai-sdk/anthropic (devDep-only) — see horizon-01 roadmap.md
+- [landed] 2026-08-31 | horizon 1 | exports types | exports['.'].types pointed at dist/cjs/index.d.ts for both conditions — see horizon-01 roadmap.md
+- [landed] 2026-08-31 | horizon 1 | eslint-disable directives | otel.ts:38 / otel.test.ts:101 dual-rule directives narrowed to the one load-bearing rule — see horizon-01 roadmap.md
+- [landed] 2026-08-31 | horizon 1 | test runner | Jest 29.7.0 + ts-jest, NOT Vitest; withEntries pattern at interceptor.test.ts:75-91 — see horizon-01 roadmap.md
+- [landed] 2026-08-31 | horizon 1 | Logger seam | Logger type is `(entry: LlmLogEntry) => void`; onBodyDropped is a parallel top-level option — see horizon-01 roadmap.md
+- [landed] 2026-08-31 | horizon 1 | undici peer dep | optional peer, absent from node_modules by default; fetch-path tests require('undici') + skip if absent — see horizon-01 roadmap.md
+- [landed] 2026-08-31 | horizon 1 | Interceptor.providers | widened private→public readonly so WrappingDispatcher can precheck shouldCapture — see horizon-01 roadmap.md
+- [landed] 2026-08-31 | horizon 1 | synthetic getHeader | extracted to exported module-level `syntheticGetHeader` helper with JSDoc; test imports it directly — see horizon-01 roadmap.md
+- 2026-08-31 | horizon 1 | APM patch-stacking | README lacks restore() caveat, APM (dd-trace/newrelic) install-order/stacking note — no code fix possible, doc-only
+- 2026-08-31 | horizon 1 | no CI | no .github directory exists at repo root
+- 2026-08-31 | horizon 1 | no CHANGELOG | no CHANGELOG.md at packages/elenwatch/ or repo root
+- 2026-08-31 | horizon 2 | streamed request body | WrappingDispatcher's asyncIterator branch reuses the cap-gated `chunks` array for options.body, so a cap trip truncates the wire body too — see horizon-02 roadmap.md
+- 2026-08-31 | horizon 2 | console.error | exactly ONE console.error in interceptor.ts (line 623 in appendChunk, shared by both directions) — one guard on capCtx.onDropped===undefined covers request+response
+- 2026-08-31 | horizon 2 | ESM require | bare require('undici')/require('@opentelemetry/api') throw under ESM; the try/catch swallows it so ESM consumers silently lose fetch capture + the OTEL logger [interceptor.ts:87, otel.ts:36]
+- 2026-08-31 | horizon 2 | dual build | tsconfig.esm.json moduleResolution bundler emits extensionless dist/esm .js AND .d.ts specifiers that Node ESM + nodenext reject; dist/esm is flat; no prepublishOnly script
+- 2026-08-31 | horizon 2 | postbuild verifier | scripts/postbuild.mjs checkTree only regex-checks index.*.js for import/export; every other file unchecked — not a real load test
+- 2026-08-31 | horizon 2 | ts-jest | jest block has NO moduleNameMapper (moduleResolution node) — .js in source relative imports would break test resolution; rewrite emitted dist instead
+- 2026-08-31 | horizon 2 | requestTransform | only wired on the http write/end path, never in WrappingDispatcher.dispatch — fetch request bodies captured but never transformed; responseTransform has ZERO invocation sites
+- 2026-08-31 | horizon 2 | redaction needles | redaction.ts DEFAULT_SENSITIVE_FIELDS ~70 field-name needles matched as case-insensitive SUBSTRINGS; horizon 2 documents this, does not narrow it
+- 2026-08-31 | horizon 2 | public API | src/index.ts exports the Interceptor class, Logger type, otelSpanLogger, VERSION — NO free install()/restore(); docs must use new Interceptor(...).install()
+- 2026-08-31 | horizon 2 | not a workspace | repo-root package.json + pnpm-lock.yaml are a stale NestJS scaffold; the real package + lockfile are in packages/elenwatch/ — horizon-3 CI runs working-directory: packages/elenwatch

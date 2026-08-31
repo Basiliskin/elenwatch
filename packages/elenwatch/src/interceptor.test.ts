@@ -1833,7 +1833,6 @@ describe('streamed request-body capture-before-dispatch (h1p2)', () => {
       interceptor.install();
       const { port, close } = await startServer();
       let rejected = false;
-      let rejectedWith: unknown = undefined;
       try {
         await udPeer!.fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
           method: 'POST',
@@ -1841,9 +1840,8 @@ describe('streamed request-body capture-before-dispatch (h1p2)', () => {
           body: throwing,
           duplex: 'half',
         } as unknown as RequestInit);
-      } catch (err) {
+      } catch {
         rejected = true;
-        rejectedWith = err;
       } finally {
         interceptor.restore();
         await close();
@@ -1866,6 +1864,142 @@ describe('streamed request-body capture-before-dispatch (h1p2)', () => {
           expect(() => JSON.stringify(e.maskedRequestBody)).not.toThrow();
         }
       }
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Streamed request body: the wire body stays complete even when the capture
+// cap trips (h2p1 — blocker 1). A streamed body larger than maxBodyBytes must
+// reach the server byte-identical; only the logged copy is allowed to shrink.
+// ---------------------------------------------------------------------------
+
+describe('streamed request body wire/capture split (h2p1)', () => {
+  /** A ReadableStream that yields each chunk on its own microtask tick. */
+  function streamOf(chunks: Buffer[]): ReadableStream<Uint8Array> {
+    let i = 0;
+    return new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (i >= chunks.length) {
+          controller.close();
+          return;
+        }
+        if (i > 0) {
+          await Promise.resolve();
+        }
+        controller.enqueue(chunks[i++]);
+      },
+    });
+  }
+
+  function splitInto(body: Buffer, parts: number): Buffer[] {
+    const size = Math.ceil(body.length / parts);
+    const out: Buffer[] = [];
+    for (let o = 0; o < body.length; o += size) {
+      out.push(body.subarray(o, o + size));
+    }
+    return out;
+  }
+
+  async function runStreamed(
+    body: Buffer,
+    parts: number,
+    opts: Partial<ConstructorParameters<typeof Interceptor>[0]>,
+  ): Promise<{ received: Buffer; entries: LlmLogEntry[] }> {
+    const received: Buffer[] = [];
+    const { port, close } = await startServer((req, res) => {
+      req.on('data', (d: Buffer) => received.push(Buffer.from(d)));
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"ok":true}');
+      });
+    });
+    const entries: LlmLogEntry[] = [];
+    const interceptor = new Interceptor({
+      providers: ['127.0.0.1'],
+      capturePayloads: true,
+      logger: (e: LlmLogEntry) => entries.push(e),
+      ...opts,
+    });
+    interceptor.install();
+    try {
+      const res = await udPeer!.fetch(
+        `http://127.0.0.1:${port}/v1/chat/completions`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: streamOf(splitInto(body, parts)),
+          duplex: 'half',
+        } as unknown as RequestInit,
+      );
+      expect(res.status).toBe(200);
+      await res.text();
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+    } finally {
+      interceptor.restore();
+      await close();
+    }
+    return { received: Buffer.concat(received), entries };
+  }
+
+  itIfUd(
+    'a 5000-byte streamed body over a 1024-byte cap reaches the server in full while the capture truncates',
+    async () => {
+      const source = Buffer.from(
+        JSON.stringify({ blob: 'A'.repeat(6000) }).slice(0, 5000),
+        'utf8',
+      );
+      expect(source.length).toBe(5000);
+      const calls: BodyDroppedInfo[] = [];
+      const { received, entries } = await runStreamed(source, 8, {
+        maxBodyBytes: 1024,
+        onBodyDropped: (info) => calls.push(info),
+      });
+
+      // Wire body: full and byte-identical.
+      expect(received.length).toBe(5000);
+      expect(received.equals(source)).toBe(true);
+
+      // Capture side: cap tripped exactly once on the request direction and
+      // the logged copy never exceeds the cap.
+      expect(calls).toHaveLength(1);
+      expect(calls[0].direction).toBe('request');
+      expect(calls[0].cap).toBe(1024);
+      expect(calls[0].bytes).toBeLessThanOrEqual(1024);
+      // A truncated capture buffer is not valid JSON, so nothing is emitted.
+      expect(entries).toHaveLength(1);
+      expect(entries[0].maskedRequestBody).toBeUndefined();
+    },
+  );
+
+  itIfUd(
+    'a non-cap-multiple binary streamed body over the cap is delivered byte-identical',
+    async () => {
+      const source = Buffer.alloc(2049);
+      for (let i = 0; i < source.length; i++) {
+        source[i] = (i * 37) % 256;
+      }
+      const { received } = await runStreamed(source, 5, { maxBodyBytes: 1024 });
+      expect(received.length).toBe(2049);
+      expect(received.equals(source)).toBe(true);
+    },
+  );
+
+  itIfUd(
+    'a streamed body under the cap is still captured in full and fires no drop',
+    async () => {
+      const obj = { id: 7, msg: 'small streamed body' };
+      const source = Buffer.from(JSON.stringify(obj), 'utf8');
+      const calls: BodyDroppedInfo[] = [];
+      const { received, entries } = await runStreamed(source, 3, {
+        maxBodyBytes: 1024,
+        onBodyDropped: (info) => calls.push(info),
+      });
+      expect(received.equals(source)).toBe(true);
+      expect(calls).toHaveLength(0);
+      expect(entries).toHaveLength(1);
+      expect(entries[0].maskedRequestBody).toEqual(obj);
     },
   );
 });

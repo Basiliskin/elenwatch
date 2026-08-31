@@ -1,0 +1,35 @@
+{
+  "roadmapFile": "docs/roadmaps/elenwatch/horizons/horizon-02-fix-streamed-body-corruption-esm-build-docs-roadmap.json",
+  "roadmapTask": "Fix the findings from an external pre-publish review of the elenwatch npm package (an in-process LLM provider HTTP traffic interceptor) so that 0.2.1 becomes publishable: blocker 1 — a streamed fetch request body over maxBodyBytes is truncated on the wire (data corruption); blocker 2 — the ESM build does not work at all (extensionless emitted specifiers + bare require() under ESM + extensionless .d.ts, and the postbuild verifier never actually loads the ESM entry); plus five should-fix items (lint error, unconditional cap-trip console.error, missing prepublishOnly, 31-line package README, undocumented aggressive redaction needles). User decisions: fix ESM properly (not CJS-only); full README sections; CI + CHANGELOG deferred to horizon 3.",
+  "createdAt": "2026-08-31T13:05:00.000Z",
+  "updatedAt": "2026-08-31T13:10:00.000Z",
+  "roadmapRevision": 0,
+  "phases": [
+    {
+      "phaseId": "split-wire-body-from-capture-buffer",
+      "status": "done",
+      "attempts": 1,
+      "gateRun": "npm run lint (exit 0); npm run build (pass); npm test (171 passed, 8 skipped, 0 failed); npx jest src/interceptor.test.ts (65 passed incl. 3 new h2p1 regression tests)",
+      "gradeResult": {
+        "phaseId": "split-wire-body-from-capture-buffer",
+        "dimensionScores": [
+          { "dimensionId": "wire-body-byte-identical-under-cap", "score": 9, "pass": true, "evidence": "New uncapped wireChunks accumulator; options.body = Buffer.concat(wireChunks) before this.original.dispatch, never from captureChunks. Tests: 5000B/cap1024 asserts server got exactly 5000 byte-identical bytes, plus 2049B non-cap-multiple binary payload, plus captured copy <= 1024." },
+          { "dimensionId": "capture-side-cap-semantics-preserved", "score": 9, "pass": true, "evidence": "Each chunk still flows through appendChunk(captureChunks, chunk, undefined, reqCapCtx); onBodyDropped fires exactly once (direction request, cap 1024); under-cap streamed test asserts zero drop callbacks and full maskedRequestBody round-trip." },
+          { "dimensionId": "capture-before-dispatch-ordering-preserved", "score": 9, "pass": true, "evidence": "Drain, push captureChunks, set capturedEnd/finished, concat wire buffer, then this.original.dispatch — same async frame, no timer/microtask inserted; horizon-1 race test unchanged and passing." },
+          { "dimensionId": "drain-error-path-preserved", "score": 9, "pass": true, "evidence": "catch block behavior unchanged: capturedEnd/finished, then handler.onError?.(e), then syntheticReq.emit('error', e); this.original.dispatch not reached on throw." },
+          { "dimensionId": "lint-clean-and-scoped-diff", "score": 9, "pass": true, "evidence": "rejectedWith declaration and assignment deleted outright (catch narrowed to bindingless catch {}); lint exits 0; diff touches only interceptor.ts and interceptor.test.ts; buffered branch and response path unchanged; appendChunk refactor only extracts a shared chunkToBuffer helper with identical semantics." }
+        ],
+        "overallPass": true
+      },
+      "compensationInvoked": false,
+      "startedAt": "2026-08-31T13:05:00.000Z",
+      "completedAt": "2026-08-31T13:10:00.000Z",
+      "notes": "Compensation (revert the interceptor.ts diff — additive wire array, no persisted state) understood; not needed. Also extracted module-level chunkToBuffer() so the wire and capture paths decode chunks identically (byte-for-byte)."
+    },
+    { "phaseId": "createrequire-lazy-load-optional-peers", "status": "not-started", "attempts": 0 },
+    { "phaseId": "rewrite-esm-specifiers-with-js-extensions", "status": "not-started", "attempts": 0 },
+    { "phaseId": "add-pack-and-import-smoke-test", "status": "not-started", "attempts": 0 },
+    { "phaseId": "gate-cap-trip-console-error", "status": "not-started", "attempts": 0 },
+    { "phaseId": "write-full-readme-sections", "status": "not-started", "attempts": 0 }
+  ]
+}
